@@ -1,0 +1,141 @@
+---
+title: "Central telefónica vs registros en SUMMA"
+author: "Georgina Ureña Ballestero"
+date: "2023-07-28"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(openxlsx)
+library(stringr)
+```
+
+```{r}
+# Carga de la data
+llamadas_panama <- read.delim("C:/Users/gurenab/Documents/Central telefonica vs registros en summa/llamadas_panama.txt",
+                              header = TRUE, sep = ",", dec = ".")
+  
+telefonos_sistema<-read.csv("C:/Users/gurenab/Documents/Central telefonica vs registros en summa/TELEFONOS_SISTEMA.csv",
+                            header = TRUE,
+                            sep = ";")
+```
+
+```{r}
+#Estructura de la data llamadas_panama
+str(llamadas_panama)
+llamadas_panama$calldate<-as.Date(llamadas_panama$calldate)
+llamadas_panama$lastapp<-as.factor(llamadas_panama$lastapp)
+llamadas_panama$disposition<-as.factor(llamadas_panama$disposition)
+summary(llamadas_panama)
+
+#Estructura de la data telefonos_sistema
+str(telefonos_sistema)
+```
+
+#Se trabaja primero las llamadas de Panamá
+```{r}
+#Se crea el mes para agrupar por fecha
+llamadas_panama$month<-month(llamadas_panama$calldate)
+
+#Se agrupa por mes y se calcula el total de las llamadas en ese mes
+llamadas_panama_mes <- llamadas_panama %>%
+  group_by(dst,month,disposition) %>%
+  summarise(total_llamadas=n(),total_duracion=sum(duration)) 
+```
+
+#Se trabaja con los números de la central
+```{r}
+#Elimino el CLI_IDENTIFICACION porque no se necesita para el análisis
+telefonos_sistema<-as.data.frame(telefonos_sistema$NUMERO) %>%
+  distinct() #Se eliminan duplicados
+names(telefonos_sistema)=c("dst")
+#Voy a crear una columna llamada "nada" sólo para cerciorarme de que los joins funcionan, luego no se toma en cuenta para los análisis
+probando <- data.frame(matrix(1:nrow(telefonos_sistema), ncol = 1, nrow = nrow(telefonos_sistema)))
+names(probando)=c("nada")
+telefonos_sistema <- as.data.frame(cbind(telefonos_sistema,probando))
+```
+
+# Identificar cuáles teléfonos registrados en summa no se han marcado en los últimos 3 meses (cruce de summa con la central telefónica): Aunque la cuenta esté gestionada, puede que el gestor no haya marcado todos los teléfonos.
+
+```{r}
+# La data que tengo son llamadas que se han marcado (tienen duración y si se recibió respuesta o no, por ejemplo) y los números de la central teléfonica, por lo que sacar números que no se han marcado no es posible. En lugar de eso, voy a hacer el cruce de telefonos_sistema con llamadas_panama_mes, para obtener info de llamadas que si debieron haberse hecho.  
+# Inner join: This join creates a new table which will combine table A (llamadas_panama_mes) and table B (telefonos_sistema), based on the join-predicate (the column we decide to link the data on: dst). Fusión de los dos data frames en uno que contiene los elementos comunes de ambos
+opcion1 <- inner_join(llamadas_panama_mes, telefonos_sistema, by=c('dst'))
+opcion1 <- opcion1[, -c(6)]
+summary(opcion1)
+
+# Se guardan los archivos en Excel
+write.xlsx(opcion1, "opcion1_summa_vs_central.xlsx")
+```
+
+# Identificar los teléfonos que aparecen como marcados en summa pero no aparecen en la central telefónica.
+
+```{r}
+# Anti join: Returns all rows in the first data frame (llamadas_panama_mes) that do not have a matching team in the second data frame (telefonos_sistema)
+opcion2 <- anti_join(llamadas_panama_mes, telefonos_sistema, by=c('dst'))
+summary(opcion2)
+
+# ----- Esto es igual que lo anterior
+# Left join: This join will take all of the values from the table we specify as left (llamadas_panama_mes) and match them to records from the table on the right (telefonos_sistema). If there isn’t a match in the second table, then it will return NULL for the row in question. Justo esta última parte es la que necesito (todos los casos que son NULL). Es decir, la idea del left join  es conservar toda la información de la base de datos en el lado izquierdo (llamadas_panama_mes) y solamente la información que coincida en la base de datos en el lado derecho (telefonos_sistema). Lo que necesito son los casos en los que las llamadas realizadas no estén en los teléfonos del sistema.   
+opcion2a <- left_join(llamadas_panama_mes, telefonos_sistema, by=c('dst'))
+opcion2a_stats <- filter(opcion2a,is.na(nada))
+opcion2a_stats <- opcion2a_stats[,-c(6)]
+summary(opcion2a_stats)
+
+# Se guardan los archivos en Excel
+write.xlsx(opcion2, "opcion2_summa_vs_central.xlsx")
+```
+
+# Identificar los teléfonos que aparecen en la central telefónica en los últimos tres meses que no guardan relación con summa.  Esto es para detectar llamadas personales.
+
+```{r}
+# Anti join: Returns all rows in the first data frame (telefonos_sistema) that do not have a matching team in the second data frame (llamadas_panama_mes)
+opcion3 <- anti_join(telefonos_sistema, llamadas_panama_mes, by=c('dst'))
+opcion3 <- as.data.frame(opcion3[, -c(2)])
+names(opcion3)=c('dst')
+
+# ----- Esto es igual que lo anterior
+# Right join: The table specified second within the join statement (telefonos_sistema) will be the one that the new table takes all of its values from. If there isn’t a match in the first table (the table specified first in the query: llamadas_panama_mes), then it will return NULL for the row(s) that do not match. Combinación que consiste en unir todas las filas del segundo data frame (telefonos_sistema) con las correspondientes en el primero (llamadas_panama). Lo que se necesitan son los casos en los que aparecen NULL en las variables pertenecientes a la tabla de llamadas_panama_mes, porque eso quiere decir que son números llamados que no son del listado de teléfonos que hay en el sistema. 
+opcion3a <- right_join(llamadas_panama_mes, telefonos_sistema, by=c('dst'))
+opcion3a_stats <- filter(opcion3a,is.na(month))
+opcion3a_stats <- opcion3a_stats[,-6]
+summary(opcion3a_stats)
+
+# Se guardan los archivos en Excel
+write.xlsx(opcion3, "opcion3summa_vs_central.xlsx")
+```
+
+# Opción definitiva: La 3. Se debe realizar una limpieza de la data, ya que contiene mucha basura
+```{r}
+# Selección de todos los casos que no empiezan con el código del país (507)
+test_a <- opcion3 %>%
+  subset(!startsWith(dst,'507'))
+
+# Selección de todos los casos que parecen empezar con el código del país (507)
+test_b <- opcion3 %>%
+  subset(startsWith(dst,'507')) 
+test_b <- as.data.frame(str_replace(test_b$dst, "507", ""))
+names(test_b) <- names(test_a)
+
+# Se unen ambas tablas nuevamente y se ordena
+test_c <- rbind(test_a,test_b) %>%
+  arrange(dst)
+
+# Se eliminan los casos en los que la longitud sea distinta de 5 (teléfono fijo) ó 6 dígitos (celular)
+test_d <- test_c %>%
+  mutate(longitud = nchar(dst)) %>%
+  filter(longitud==5 | longitud==6) %>%
+  mutate(tipo = case_when(longitud == 5 ~ 'Fijo',
+                          longitud == 6 ~  'Celular'))
+
+test_e <- test_d[-c(1:6,8,9,11:15), -c(2)] %>%
+  arrange(tipo,dst) %>%
+  distinct()
+
+# Se guardan los archivos en Excel
+write.xlsx(test_e, "summa_vs_central.xlsx")
+```
+
+

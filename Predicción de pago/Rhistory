@@ -1,0 +1,512 @@
+cartera_final$CARGOS_PENDIENTES = scale(cartera_final$CARGOS_PENDIENTES, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULT_SALARIO = scale(cartera_final$MONTO_ULT_SALARIO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_VEHICULOS = scale(cartera_final$CANTIDAD_VEHICULOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_GESTIONES = scale(cartera_final$CANTIDAD_GESTIONES, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_OPERACIONES_CLIENTE = scale(cartera_final$CANTIDAD_OPERACIONES_CLIENTE, center = TRUE, scale = TRUE)
+# Se almacenan las variables de identificación por separado para eliminarlas del dataset y, posterior al análisis, ser enlazadas con los resultados que se obtengan. Además, agregro un consecutivo sólo para asegurarme de enlazar de forma correcta los resultados que se vayan a obtener con las variables de identificación.
+variables_identificacion = cartera_final %>%
+select (CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION) %>%
+mutate(INDICE=1:nrow(cartera_final))
+# Se eliminan las variables de identificación del conjunto de datos
+cartera = cartera_final[, !(names(cartera_final) %in% c("CLI_IDENTIFICACION", "CLI_NOMBRE_COMPLETO", "OPE_NUMERO_OPERACION"))]
+# Prueba de independencia de todas las variables predictoras categóricas con la variable respuesta
+variables_categoricas = sapply(cartera, function(x) is.factor(x))
+variables_categoricas = names(variables_categoricas[variables_categoricas])
+independencia_tests = lapply(variables_categoricas, function(var) {
+chisq.test(cartera_final$AL_MENOS_UN_PAGO, cartera_final[[var]])
+})
+# Mostrar los resultados de las pruebas de independencia
+for (i in 1:length(variables_categoricas)) {
+cat("Variable:", variables_categoricas[i], "\n")
+print(independencia_tests[[i]])
+}
+# Análisis de multicolinealidad (sólo para variables numéricas)
+variables_numericas = sapply(cartera, is.numeric)
+variables_numericas = names(variables_numericas[variables_numericas])
+# Calcular la matriz de correlación entre las variables numéricas
+correlation_matrix = cor(cartera[, variables_numericas])
+# Crear un gráfico de matriz de correlación
+corrplot::corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 95, tl.cex = 0.5)
+# Se convierten las variables categóricas en factores
+cartera[variables_categoricas] <- lapply(cartera[variables_categoricas], factor)
+# Se realiza la codificación one-hot para las variables categóricas
+cartera_codificado = model.matrix(~ . - 1, data = cartera[, variables_categoricas])
+# Se unen las bases cartera (que tiene las x's numéricas ya escaladas) y cartera_codificado (que tiene las x's categóricas ya como dummies)
+cartera = cbind((cartera %>% select(-all_of(variables_categoricas))), cartera_codificado)
+set.seed(123)  # Para reproducibilidad
+proporcion_entrenamiento = 0.7  # Proporción de datos de entrenamiento
+indices_entrenamiento = sample(1:nrow(cartera), nrow(cartera) * proporcion_entrenamiento)
+datos_entrenamiento = cartera[indices_entrenamiento, ]
+datos_prueba = cartera[-indices_entrenamiento, ]
+#Agrego un consecutivo en datos_prueba sólo para asegurarme más adelante de enlazar los resultados obtenidos con las variables de identificación de forma correcta
+df = data.frame("INDICE" = 1:nrow(cartera))
+df = as.data.frame(df[-indices_entrenamiento,])
+names(df)[1]="INDICE"
+datos_prueba = cbind(datos_prueba,df)
+# Separo las variables independientes (x's) y la variable objetivo (y)
+x_entrenamiento = as.matrix(cartera[indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+y_entrenamiento = as.vector(datos_entrenamiento$AL_MENOS_UN_PAGO)
+# Ajusto el modelo de regresión logística con LASSO
+modelo_lasso = cv.glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, nfolds = 5)
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Ajusto el modelo final con el valor óptimo de lambda
+modelo_final = glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, lambda = lambda_optimo, family = "binomial")
+# Utilizo el conjunto de testing para evaluar el modelo y se calculan métricas de rendimiento.
+x_prueba <- as.matrix(cartera[-indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+predicciones <- predict(modelo_final, newx = x_prueba, type = "response")
+# Umbral para clasificar como 1 o 0
+umbral <- 0.5
+predicciones_clasificadas <- ifelse(predicciones > umbral, 1, 0)
+# Evalúo el modelo
+matriz_confusion <- confusionMatrix(data = as.factor(predicciones_clasificadas), reference = as.factor(datos_prueba$AL_MENOS_UN_PAGO))
+accuracy <- matriz_confusion$byClass["Pos Pred Value"]
+# Evalúo el modelo
+matriz_confusion <- confusionMatrix(data = as.factor(predicciones_clasificadas), reference = as.factor(datos_prueba$AL_MENOS_UN_PAGO))
+# Umbrales para clasificar probabilidades de pago
+predicciones_categorizadas = as.data.frame(predicciones)
+predicciones_categorizadas = predicciones_categorizadas %>%
+rename_with(~ "PROBABILIDAD", s0) %>%
+mutate(PREDICCION = case_when(
+0 <= PROBABILIDAD & PROBABILIDAD < 0.2 ~ "Improbable",
+0.2 <= PROBABILIDAD & PROBABILIDAD < 0.4 ~ "Poco probable",
+0.4 <= PROBABILIDAD & PROBABILIDAD < 0.6 ~ "Medianamente probable",
+0.6 <= PROBABILIDAD & PROBABILIDAD < 0.8 ~ "Probable",
+0.8 <= PROBABILIDAD & PROBABILIDAD <= 1 ~ "Muy probable"))
+table(predicciones_categorizadas$PREDICCION)
+prop.table(table(predicciones_categorizadas$PREDICCION))*100
+datos_prueba$PROBABILIDAD = predicciones_categorizadas$PROBABILIDAD
+datos_prueba$PREDICCION = predicciones_categorizadas$PREDICCION
+# Uno las predicciones con las variables de identificación correspondientes
+predicciones_finales =  datos_prueba %>%
+left_join(variables_identificacion, by=c("INDICE"="INDICE")) %>%
+select(CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION, PREDICCION)
+View(predicciones_finales)
+cartera_final = readRDS(file = "cartera_final.rds")
+str(cartera_final)
+# Bibliotecas necesarias
+library(caret)
+library(dplyr)
+library(glmnet)
+cartera_final$CANTIDAD_PROCESOS = scale(cartera_final$CANTIDAD_PROCESOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_HIJOS = scale(cartera_final$CANTIDAD_HIJOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROPIEDADES = scale(cartera_final$CANTIDAD_PROPIEDADES, center = TRUE, scale = TRUE)
+cartera_final$SCORE_FINAL = scale(cartera_final$SCORE_FINAL, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA = scale(cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA, center = TRUE, scale = TRUE)
+cartera_final$EDAD = scale(cartera_final$EDAD, center = TRUE, scale = TRUE)
+cartera_final$MAO_MONTO_ORIGINAL = scale(cartera_final$MAO_MONTO_ORIGINAL, center = TRUE, scale = TRUE)
+cartera_final$MAO_SALDO = scale(cartera_final$MAO_SALDO, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULTIMO_PAGO = scale(cartera_final$MONTO_ULTIMO_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO = scale(cartera_final$CANTIDAD_PROMESAS_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS = scale(cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_COMUNICACIONES = scale(cartera_final$CANTIDAD_COMUNICACIONES, center = TRUE, scale = TRUE)
+cartera_final$SALDO_CAPITAL = scale(cartera_final$SALDO_CAPITAL, center = TRUE, scale = TRUE)
+cartera_final$INTERES = scale(cartera_final$INTERES, center = TRUE, scale = TRUE)
+cartera_final$CARGOS_PENDIENTES = scale(cartera_final$CARGOS_PENDIENTES, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULT_SALARIO = scale(cartera_final$MONTO_ULT_SALARIO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_VEHICULOS = scale(cartera_final$CANTIDAD_VEHICULOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_GESTIONES = scale(cartera_final$CANTIDAD_GESTIONES, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_OPERACIONES_CLIENTE = scale(cartera_final$CANTIDAD_OPERACIONES_CLIENTE, center = TRUE, scale = TRUE)
+# Se almacenan las variables de identificación por separado para eliminarlas del dataset y, posterior al análisis, ser enlazadas con los resultados que se obtengan. Además, agregro un consecutivo sólo para asegurarme de enlazar de forma correcta los resultados que se vayan a obtener con las variables de identificación.
+variables_identificacion = cartera_final %>%
+select (CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION) %>%
+mutate(INDICE=1:nrow(cartera_final))
+# Se eliminan las variables de identificación del conjunto de datos
+cartera = cartera_final[, !(names(cartera_final) %in% c("CLI_IDENTIFICACION", "CLI_NOMBRE_COMPLETO", "OPE_NUMERO_OPERACION"))]
+# Prueba de independencia de todas las variables predictoras categóricas con la variable respuesta
+variables_categoricas = sapply(cartera, function(x) is.factor(x))
+variables_categoricas = names(variables_categoricas[variables_categoricas])
+independencia_tests = lapply(variables_categoricas, function(var) {
+chisq.test(cartera_final$AL_MENOS_UN_PAGO, cartera_final[[var]])
+})
+# Mostrar los resultados de las pruebas de independencia
+for (i in 1:length(variables_categoricas)) {
+cat("Variable:", variables_categoricas[i], "\n")
+print(independencia_tests[[i]])
+}
+# Análisis de multicolinealidad (sólo para variables numéricas)
+variables_numericas = sapply(cartera, is.numeric)
+variables_numericas = names(variables_numericas[variables_numericas])
+# Calcular la matriz de correlación entre las variables numéricas
+correlation_matrix = cor(cartera[, variables_numericas])
+# Crear un gráfico de matriz de correlación
+corrplot::corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 95, tl.cex = 0.5)
+# Se convierten las variables categóricas en factores
+cartera[variables_categoricas] <- lapply(cartera[variables_categoricas], factor)
+# Se realiza la codificación one-hot para las variables categóricas
+cartera_codificado = model.matrix(~ . - 1, data = cartera[, variables_categoricas])
+# Se unen las bases cartera (que tiene las x's numéricas ya escaladas) y cartera_codificado (que tiene las x's categóricas ya como dummies)
+cartera = cbind((cartera %>% select(-all_of(variables_categoricas))), cartera_codificado)
+set.seed(123)  # Para reproducibilidad
+proporcion_entrenamiento = 0.7  # Proporción de datos de entrenamiento
+indices_entrenamiento = sample(1:nrow(cartera), nrow(cartera) * proporcion_entrenamiento)
+datos_entrenamiento = cartera[indices_entrenamiento, ]
+datos_prueba = cartera[-indices_entrenamiento, ]
+#Agrego un consecutivo en datos_prueba sólo para asegurarme más adelante de enlazar los resultados obtenidos con las variables de identificación de forma correcta
+df = data.frame("INDICE" = 1:nrow(cartera))
+df = as.data.frame(df[-indices_entrenamiento,])
+names(df)[1]="INDICE"
+datos_prueba = cbind(datos_prueba,df)
+# Separo las variables independientes (x's) y la variable objetivo (y)
+x_entrenamiento = as.matrix(cartera[indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+y_entrenamiento = as.vector(datos_entrenamiento$AL_MENOS_UN_PAGO)
+# Ajusto el modelo de regresión logística con LASSO
+modelo_lasso = cv.glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, nfolds = 5)
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Ajusto el modelo final con el valor óptimo de lambda
+modelo_final = glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, lambda = lambda_optimo, family = "binomial")
+# Utilizo el conjunto de testing para evaluar el modelo y se calculan métricas de rendimiento.
+x_prueba <- as.matrix(cartera[-indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+predicciones <- predict(modelo_final, newx = x_prueba, type = "response")
+# Umbral para clasificar como 1 o 0
+umbral <- 0.5
+predicciones_clasificadas <- ifelse(predicciones > umbral, 1, 0)
+# Evalúo el modelo
+matriz_confusion <- confusionMatrix(data = as.factor(predicciones_clasificadas), reference = as.factor(datos_prueba$AL_MENOS_UN_PAGO))
+accuracy <- matriz_confusion$byClass["Pos Pred Value"]
+recall <- matriz_confusion$byClass["Sensitivity"]
+f1_score <- matriz_confusion$byClass["F1"]
+# Muestro la matriz de confusión y las métricas
+print(matriz_confusion)
+print(accuracy)
+# Accuracy (Exactitud)): Porcentaje de casos que el modelo ha acertado.
+print(recall)
+# Recall (Exhaustividad): Cantidad que el modelo de machine learning es capaz de identificar.
+print(f1_score)
+# Umbrales para clasificar probabilidades de pago
+predicciones_categorizadas = as.data.frame(predicciones)
+predicciones_categorizadas = predicciones_categorizadas %>%
+rename_with(~ "PROBABILIDAD", s0) %>%
+mutate(PREDICCION = case_when(
+0 <= PROBABILIDAD & PROBABILIDAD < 0.2 ~ "Improbable",
+0.2 <= PROBABILIDAD & PROBABILIDAD < 0.4 ~ "Poco probable",
+0.4 <= PROBABILIDAD & PROBABILIDAD < 0.6 ~ "Medianamente probable",
+0.6 <= PROBABILIDAD & PROBABILIDAD < 0.8 ~ "Probable",
+0.8 <= PROBABILIDAD & PROBABILIDAD <= 1 ~ "Muy probable"))
+table(predicciones_categorizadas$PREDICCION)
+prop.table(table(predicciones_categorizadas$PREDICCION))*100
+datos_prueba$PROBABILIDAD = predicciones_categorizadas$PROBABILIDAD
+datos_prueba$PREDICCION = predicciones_categorizadas$PREDICCION
+# Uno las predicciones con las variables de identificación correspondientes
+predicciones_finales =  datos_prueba %>%
+left_join(variables_identificacion, by=c("INDICE"="INDICE")) %>%
+select(CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION, PREDICCION)
+View(predicciones_finales)
+cartera_final = readRDS(file = "cartera_final.rds")
+str(cartera_final)
+cartera_final =  cartera_final[c(1:15),]
+# Bibliotecas necesarias
+library(caret)
+library(dplyr)
+library(glmnet)
+cartera_final$CANTIDAD_PROCESOS = scale(cartera_final$CANTIDAD_PROCESOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_HIJOS = scale(cartera_final$CANTIDAD_HIJOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROPIEDADES = scale(cartera_final$CANTIDAD_PROPIEDADES, center = TRUE, scale = TRUE)
+cartera_final$SCORE_FINAL = scale(cartera_final$SCORE_FINAL, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA = scale(cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA, center = TRUE, scale = TRUE)
+cartera_final$EDAD = scale(cartera_final$EDAD, center = TRUE, scale = TRUE)
+cartera_final$MAO_MONTO_ORIGINAL = scale(cartera_final$MAO_MONTO_ORIGINAL, center = TRUE, scale = TRUE)
+cartera_final$MAO_SALDO = scale(cartera_final$MAO_SALDO, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULTIMO_PAGO = scale(cartera_final$MONTO_ULTIMO_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO = scale(cartera_final$CANTIDAD_PROMESAS_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS = scale(cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_COMUNICACIONES = scale(cartera_final$CANTIDAD_COMUNICACIONES, center = TRUE, scale = TRUE)
+cartera_final$SALDO_CAPITAL = scale(cartera_final$SALDO_CAPITAL, center = TRUE, scale = TRUE)
+cartera_final$INTERES = scale(cartera_final$INTERES, center = TRUE, scale = TRUE)
+cartera_final$CARGOS_PENDIENTES = scale(cartera_final$CARGOS_PENDIENTES, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULT_SALARIO = scale(cartera_final$MONTO_ULT_SALARIO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_VEHICULOS = scale(cartera_final$CANTIDAD_VEHICULOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_GESTIONES = scale(cartera_final$CANTIDAD_GESTIONES, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_OPERACIONES_CLIENTE = scale(cartera_final$CANTIDAD_OPERACIONES_CLIENTE, center = TRUE, scale = TRUE)
+# Se almacenan las variables de identificación por separado para eliminarlas del dataset y, posterior al análisis, ser enlazadas con los resultados que se obtengan. Además, agregro un consecutivo sólo para asegurarme de enlazar de forma correcta los resultados que se vayan a obtener con las variables de identificación.
+variables_identificacion = cartera_final %>%
+select (CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION) %>%
+mutate(INDICE=1:nrow(cartera_final))
+# Se eliminan las variables de identificación del conjunto de datos
+cartera = cartera_final[, !(names(cartera_final) %in% c("CLI_IDENTIFICACION", "CLI_NOMBRE_COMPLETO", "OPE_NUMERO_OPERACION"))]
+# Prueba de independencia de todas las variables predictoras categóricas con la variable respuesta
+variables_categoricas = sapply(cartera, function(x) is.factor(x))
+variables_categoricas = names(variables_categoricas[variables_categoricas])
+independencia_tests = lapply(variables_categoricas, function(var) {
+chisq.test(cartera_final$AL_MENOS_UN_PAGO, cartera_final[[var]])
+})
+# Mostrar los resultados de las pruebas de independencia
+for (i in 1:length(variables_categoricas)) {
+cat("Variable:", variables_categoricas[i], "\n")
+print(independencia_tests[[i]])
+}
+# Análisis de multicolinealidad (sólo para variables numéricas)
+variables_numericas = sapply(cartera, is.numeric)
+variables_numericas = names(variables_numericas[variables_numericas])
+# Calcular la matriz de correlación entre las variables numéricas
+correlation_matrix = cor(cartera[, variables_numericas])
+# Crear un gráfico de matriz de correlación
+corrplot::corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 95, tl.cex = 0.5)
+# Se convierten las variables categóricas en factores
+cartera[variables_categoricas] <- lapply(cartera[variables_categoricas], factor)
+# Se realiza la codificación one-hot para las variables categóricas
+cartera_codificado = model.matrix(~ . - 1, data = cartera[, variables_categoricas])
+# Se unen las bases cartera (que tiene las x's numéricas ya escaladas) y cartera_codificado (que tiene las x's categóricas ya como dummies)
+cartera = cbind((cartera %>% select(-all_of(variables_categoricas))), cartera_codificado)
+set.seed(123)  # Para reproducibilidad
+proporcion_entrenamiento = 0.7  # Proporción de datos de entrenamiento
+indices_entrenamiento = sample(1:nrow(cartera), nrow(cartera) * proporcion_entrenamiento)
+datos_entrenamiento = cartera[indices_entrenamiento, ]
+datos_prueba = cartera[-indices_entrenamiento, ]
+#Agrego un consecutivo en datos_prueba sólo para asegurarme más adelante de enlazar los resultados obtenidos con las variables de identificación de forma correcta
+df = data.frame("INDICE" = 1:nrow(cartera))
+df = as.data.frame(df[-indices_entrenamiento,])
+names(df)[1]="INDICE"
+datos_prueba = cbind(datos_prueba,df)
+# Separo las variables independientes (x's) y la variable objetivo (y)
+x_entrenamiento = as.matrix(cartera[indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+y_entrenamiento = as.vector(datos_entrenamiento$AL_MENOS_UN_PAGO)
+# Ajusto el modelo de regresión logística con LASSO
+modelo_lasso = cv.glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, nfolds = 5)
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Ajusto el modelo final con el valor óptimo de lambda
+modelo_final = glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, lambda = lambda_optimo, family = "binomial")
+# Utilizo el conjunto de testing para evaluar el modelo y se calculan métricas de rendimiento.
+x_prueba <- as.matrix(cartera[-indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+predicciones <- predict(modelo_final, newx = x_prueba, type = "response")
+# Umbral para clasificar como 1 o 0
+umbral <- 0.5
+predicciones_clasificadas <- ifelse(predicciones > umbral, 1, 0)
+# Evalúo el modelo
+matriz_confusion <- confusionMatrix(data = as.factor(predicciones_clasificadas), reference = as.factor(datos_prueba$AL_MENOS_UN_PAGO))
+accuracy <- matriz_confusion$byClass["Pos Pred Value"]
+recall <- matriz_confusion$byClass["Sensitivity"]
+f1_score <- matriz_confusion$byClass["F1"]
+# Muestro la matriz de confusión y las métricas
+print(matriz_confusion)
+print(accuracy)
+# Accuracy (Exactitud)): Porcentaje de casos que el modelo ha acertado.
+print(recall)
+# Recall (Exhaustividad): Cantidad que el modelo de machine learning es capaz de identificar.
+print(f1_score)
+# Umbrales para clasificar probabilidades de pago
+predicciones_categorizadas = as.data.frame(predicciones)
+predicciones_categorizadas = predicciones_categorizadas %>%
+rename_with(~ "PROBABILIDAD", s0) %>%
+mutate(PREDICCION = case_when(
+0 <= PROBABILIDAD & PROBABILIDAD < 0.2 ~ "Improbable",
+0.2 <= PROBABILIDAD & PROBABILIDAD < 0.4 ~ "Poco probable",
+0.4 <= PROBABILIDAD & PROBABILIDAD < 0.6 ~ "Medianamente probable",
+0.6 <= PROBABILIDAD & PROBABILIDAD < 0.8 ~ "Probable",
+0.8 <= PROBABILIDAD & PROBABILIDAD <= 1 ~ "Muy probable"))
+table(predicciones_categorizadas$PREDICCION)
+prop.table(table(predicciones_categorizadas$PREDICCION))*100
+datos_prueba$PROBABILIDAD = predicciones_categorizadas$PROBABILIDAD
+datos_prueba$PREDICCION = predicciones_categorizadas$PREDICCION
+# Uno las predicciones con las variables de identificación correspondientes
+predicciones_finales =  datos_prueba %>%
+left_join(variables_identificacion, by=c("INDICE"="INDICE")) %>%
+select(CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION, PREDICCION)
+View(predicciones_finales)
+cartera_final = readRDS(file = "cartera_final.rds")
+str(cartera_final)
+# Bibliotecas necesarias
+library(caret)
+library(dplyr)
+library(glmnet)
+cartera_final$CANTIDAD_PROCESOS = scale(cartera_final$CANTIDAD_PROCESOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_HIJOS = scale(cartera_final$CANTIDAD_HIJOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROPIEDADES = scale(cartera_final$CANTIDAD_PROPIEDADES, center = TRUE, scale = TRUE)
+cartera_final$SCORE_FINAL = scale(cartera_final$SCORE_FINAL, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA = scale(cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA, center = TRUE, scale = TRUE)
+cartera_final$EDAD = scale(cartera_final$EDAD, center = TRUE, scale = TRUE)
+cartera_final$MAO_MONTO_ORIGINAL = scale(cartera_final$MAO_MONTO_ORIGINAL, center = TRUE, scale = TRUE)
+cartera_final$MAO_SALDO = scale(cartera_final$MAO_SALDO, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULTIMO_PAGO = scale(cartera_final$MONTO_ULTIMO_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO = scale(cartera_final$CANTIDAD_PROMESAS_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS = scale(cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_COMUNICACIONES = scale(cartera_final$CANTIDAD_COMUNICACIONES, center = TRUE, scale = TRUE)
+cartera_final$SALDO_CAPITAL = scale(cartera_final$SALDO_CAPITAL, center = TRUE, scale = TRUE)
+cartera_final$INTERES = scale(cartera_final$INTERES, center = TRUE, scale = TRUE)
+cartera_final$CARGOS_PENDIENTES = scale(cartera_final$CARGOS_PENDIENTES, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULT_SALARIO = scale(cartera_final$MONTO_ULT_SALARIO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_VEHICULOS = scale(cartera_final$CANTIDAD_VEHICULOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_GESTIONES = scale(cartera_final$CANTIDAD_GESTIONES, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_OPERACIONES_CLIENTE = scale(cartera_final$CANTIDAD_OPERACIONES_CLIENTE, center = TRUE, scale = TRUE)
+# Se almacenan las variables de identificación por separado para eliminarlas del dataset y, posterior al análisis, ser enlazadas con los resultados que se obtengan. Además, agregro un consecutivo sólo para asegurarme de enlazar de forma correcta los resultados que se vayan a obtener con las variables de identificación.
+variables_identificacion = cartera_final %>%
+select (CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION) %>%
+mutate(INDICE=1:nrow(cartera_final))
+# Se eliminan las variables de identificación del conjunto de datos
+cartera = cartera_final[, !(names(cartera_final) %in% c("CLI_IDENTIFICACION", "CLI_NOMBRE_COMPLETO", "OPE_NUMERO_OPERACION"))]
+# Prueba de independencia de todas las variables predictoras categóricas con la variable respuesta
+variables_categoricas = sapply(cartera, function(x) is.factor(x))
+variables_categoricas = names(variables_categoricas[variables_categoricas])
+independencia_tests = lapply(variables_categoricas, function(var) {
+chisq.test(cartera_final$AL_MENOS_UN_PAGO, cartera_final[[var]])
+})
+# Mostrar los resultados de las pruebas de independencia
+for (i in 1:length(variables_categoricas)) {
+cat("Variable:", variables_categoricas[i], "\n")
+print(independencia_tests[[i]])
+}
+# Análisis de multicolinealidad (sólo para variables numéricas)
+variables_numericas = sapply(cartera, is.numeric)
+variables_numericas = names(variables_numericas[variables_numericas])
+# Calcular la matriz de correlación entre las variables numéricas
+correlation_matrix = cor(cartera[, variables_numericas])
+# Crear un gráfico de matriz de correlación
+corrplot::corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 95, tl.cex = 0.5)
+# Se convierten las variables categóricas en factores
+cartera[variables_categoricas] <- lapply(cartera[variables_categoricas], factor)
+# Se realiza la codificación one-hot para las variables categóricas
+cartera_codificado = model.matrix(~ . - 1, data = cartera[, variables_categoricas])
+# Se unen las bases cartera (que tiene las x's numéricas ya escaladas) y cartera_codificado (que tiene las x's categóricas ya como dummies)
+cartera = cbind((cartera %>% select(-all_of(variables_categoricas))), cartera_codificado)
+set.seed(123)  # Para reproducibilidad
+proporcion_entrenamiento = 0.7  # Proporción de datos de entrenamiento
+indices_entrenamiento = sample(1:nrow(cartera), nrow(cartera) * proporcion_entrenamiento)
+datos_entrenamiento = cartera[indices_entrenamiento, ]
+datos_prueba = cartera[-indices_entrenamiento, ]
+#Agrego un consecutivo en datos_prueba sólo para asegurarme más adelante de enlazar los resultados obtenidos con las variables de identificación de forma correcta
+df = data.frame("INDICE" = 1:nrow(cartera))
+df = as.data.frame(df[-indices_entrenamiento,])
+names(df)[1]="INDICE"
+datos_prueba = cbind(datos_prueba,df)
+# Separo las variables independientes (x's) y la variable objetivo (y)
+x_entrenamiento = as.matrix(cartera[indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+y_entrenamiento = as.vector(datos_entrenamiento$AL_MENOS_UN_PAGO)
+# Ajusto el modelo de regresión logística con LASSO
+modelo_lasso = cv.glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, nfolds = 5)
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Ajusto el modelo final con el valor óptimo de lambda
+modelo_final = glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, lambda = lambda_optimo, family = "binomial")
+# Utilizo el conjunto de testing para evaluar el modelo y se calculan métricas de rendimiento.
+x_prueba <- as.matrix(cartera[-indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+predicciones <- predict(modelo_final, newx = x_prueba, type = "response")
+# Umbral para clasificar como 1 o 0
+umbral <- 0.5
+predicciones_clasificadas <- ifelse(predicciones > umbral, 1, 0)
+# Evalúo el modelo
+matriz_confusion <- confusionMatrix(data = as.factor(predicciones_clasificadas), reference = as.factor(datos_prueba$AL_MENOS_UN_PAGO))
+accuracy <- matriz_confusion$byClass["Pos Pred Value"]
+recall <- matriz_confusion$byClass["Sensitivity"]
+f1_score <- matriz_confusion$byClass["F1"]
+# Muestro la matriz de confusión y las métricas
+print(matriz_confusion)
+print(accuracy)
+# Accuracy (Exactitud)): Porcentaje de casos que el modelo ha acertado.
+print(recall)
+# Recall (Exhaustividad): Cantidad que el modelo de machine learning es capaz de identificar.
+print(f1_score)
+# Umbrales para clasificar probabilidades de pago
+predicciones_categorizadas = as.data.frame(predicciones)
+# Umbrales para clasificar probabilidades de pago
+predicciones_categorizadas = as.data.frame(predicciones)
+predicciones_categorizadas = predicciones_categorizadas %>%
+rename_with(~ "PROBABILIDAD", s0) %>%
+mutate(PREDICCION = case_when(
+0 <= PROBABILIDAD & PROBABILIDAD < 0.2 ~ "Improbable",
+0.2 <= PROBABILIDAD & PROBABILIDAD < 0.4 ~ "Poco probable",
+0.4 <= PROBABILIDAD & PROBABILIDAD < 0.6 ~ "Medianamente probable",
+0.6 <= PROBABILIDAD & PROBABILIDAD < 0.8 ~ "Probable",
+0.8 <= PROBABILIDAD & PROBABILIDAD <= 1 ~ "Muy probable"))
+table(predicciones_categorizadas$PREDICCION)
+prop.table(table(predicciones_categorizadas$PREDICCION))*100
+datos_prueba$PROBABILIDAD = predicciones_categorizadas$PROBABILIDAD
+datos_prueba$PREDICCION = predicciones_categorizadas$PREDICCION
+# Uno las predicciones con las variables de identificación correspondientes
+predicciones_finales =  datos_prueba %>%
+left_join(variables_identificacion, by=c("INDICE"="INDICE")) %>%
+select(CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION, PREDICCION)
+View(predicciones_finales)
+cartera_final = readRDS(file = "cartera_final.rds")
+str(cartera_final)
+cartera_final =  cartera_final[c(1:30),]
+# Bibliotecas necesarias
+library(caret)
+library(dplyr)
+library(glmnet)
+cartera_final$CANTIDAD_PROCESOS = scale(cartera_final$CANTIDAD_PROCESOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_HIJOS = scale(cartera_final$CANTIDAD_HIJOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROPIEDADES = scale(cartera_final$CANTIDAD_PROPIEDADES, center = TRUE, scale = TRUE)
+cartera_final$SCORE_FINAL = scale(cartera_final$SCORE_FINAL, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA = scale(cartera_final$CANTIDAD_SOCIEDADES_PARTICIPA, center = TRUE, scale = TRUE)
+cartera_final$EDAD = scale(cartera_final$EDAD, center = TRUE, scale = TRUE)
+cartera_final$MAO_MONTO_ORIGINAL = scale(cartera_final$MAO_MONTO_ORIGINAL, center = TRUE, scale = TRUE)
+cartera_final$MAO_SALDO = scale(cartera_final$MAO_SALDO, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULTIMO_PAGO = scale(cartera_final$MONTO_ULTIMO_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO = scale(cartera_final$CANTIDAD_PROMESAS_PAGO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS = scale(cartera_final$CANTIDAD_PROMESAS_PAGO_CUMPLIDAS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_COMUNICACIONES = scale(cartera_final$CANTIDAD_COMUNICACIONES, center = TRUE, scale = TRUE)
+cartera_final$SALDO_CAPITAL = scale(cartera_final$SALDO_CAPITAL, center = TRUE, scale = TRUE)
+cartera_final$INTERES = scale(cartera_final$INTERES, center = TRUE, scale = TRUE)
+cartera_final$CARGOS_PENDIENTES = scale(cartera_final$CARGOS_PENDIENTES, center = TRUE, scale = TRUE)
+cartera_final$MONTO_ULT_SALARIO = scale(cartera_final$MONTO_ULT_SALARIO, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_VEHICULOS = scale(cartera_final$CANTIDAD_VEHICULOS, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_GESTIONES = scale(cartera_final$CANTIDAD_GESTIONES, center = TRUE, scale = TRUE)
+cartera_final$CANTIDAD_OPERACIONES_CLIENTE = scale(cartera_final$CANTIDAD_OPERACIONES_CLIENTE, center = TRUE, scale = TRUE)
+# Se almacenan las variables de identificación por separado para eliminarlas del dataset y, posterior al análisis, ser enlazadas con los resultados que se obtengan. Además, agregro un consecutivo sólo para asegurarme de enlazar de forma correcta los resultados que se vayan a obtener con las variables de identificación.
+variables_identificacion = cartera_final %>%
+select (CLI_IDENTIFICACION, CLI_NOMBRE_COMPLETO, OPE_NUMERO_OPERACION) %>%
+mutate(INDICE=1:nrow(cartera_final))
+# Se eliminan las variables de identificación del conjunto de datos
+cartera = cartera_final[, !(names(cartera_final) %in% c("CLI_IDENTIFICACION", "CLI_NOMBRE_COMPLETO", "OPE_NUMERO_OPERACION"))]
+# Prueba de independencia de todas las variables predictoras categóricas con la variable respuesta
+variables_categoricas = sapply(cartera, function(x) is.factor(x))
+variables_categoricas = names(variables_categoricas[variables_categoricas])
+independencia_tests = lapply(variables_categoricas, function(var) {
+chisq.test(cartera_final$AL_MENOS_UN_PAGO, cartera_final[[var]])
+})
+# Mostrar los resultados de las pruebas de independencia
+for (i in 1:length(variables_categoricas)) {
+cat("Variable:", variables_categoricas[i], "\n")
+print(independencia_tests[[i]])
+}
+# Análisis de multicolinealidad (sólo para variables numéricas)
+variables_numericas = sapply(cartera, is.numeric)
+variables_numericas = names(variables_numericas[variables_numericas])
+# Calcular la matriz de correlación entre las variables numéricas
+correlation_matrix = cor(cartera[, variables_numericas])
+# Crear un gráfico de matriz de correlación
+corrplot::corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 95, tl.cex = 0.5)
+# Se convierten las variables categóricas en factores
+cartera[variables_categoricas] <- lapply(cartera[variables_categoricas], factor)
+# Se realiza la codificación one-hot para las variables categóricas
+cartera_codificado = model.matrix(~ . - 1, data = cartera[, variables_categoricas])
+# Se unen las bases cartera (que tiene las x's numéricas ya escaladas) y cartera_codificado (que tiene las x's categóricas ya como dummies)
+cartera = cbind((cartera %>% select(-all_of(variables_categoricas))), cartera_codificado)
+set.seed(123)  # Para reproducibilidad
+proporcion_entrenamiento = 0.7  # Proporción de datos de entrenamiento
+indices_entrenamiento = sample(1:nrow(cartera), nrow(cartera) * proporcion_entrenamiento)
+datos_entrenamiento = cartera[indices_entrenamiento, ]
+datos_prueba = cartera[-indices_entrenamiento, ]
+#Agrego un consecutivo en datos_prueba sólo para asegurarme más adelante de enlazar los resultados obtenidos con las variables de identificación de forma correcta
+df = data.frame("INDICE" = 1:nrow(cartera))
+df = as.data.frame(df[-indices_entrenamiento,])
+names(df)[1]="INDICE"
+datos_prueba = cbind(datos_prueba,df)
+# Separo las variables independientes (x's) y la variable objetivo (y)
+x_entrenamiento = as.matrix(cartera[indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+y_entrenamiento = as.vector(datos_entrenamiento$AL_MENOS_UN_PAGO)
+# Ajusto el modelo de regresión logística con LASSO
+modelo_lasso = cv.glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, nfolds = 5)
+# Obtengo el valor óptimo de lambda seleccionado por validación cruzada
+lambda_optimo = modelo_lasso$lambda.min
+# Ajusto el modelo final con el valor óptimo de lambda
+modelo_final = glmnet(x_entrenamiento, y_entrenamiento, alpha = 1, lambda = lambda_optimo, family = "binomial")
+# Utilizo el conjunto de testing para evaluar el modelo y se calculan métricas de rendimiento.
+x_prueba <- as.matrix(cartera[-indices_entrenamiento, -(which(colnames(cartera)=="AL_MENOS_UN_PAGO"))])
+predicciones <- predict(modelo_final, newx = x_prueba, type = "response")
+# Umbral para clasificar como 1 o 0
+umbral <- 0.5
+predicciones_clasificadas <- ifelse(predicciones > umbral, 1, 0)
+# Evalúo el modelo
+matriz_confusion <- confusionMatrix(data = as.factor(predicciones_clasificadas), reference = as.factor(datos_prueba$AL_MENOS_UN_PAGO))
+accuracy <- matriz_confusion$byClass["Pos Pred Value"]
+recall <- matriz_confusion$byClass["Sensitivity"]
+f1_score <- matriz_confusion$byClass["F1"]
+# Muestro la matriz de confusión y las métricas
+print(matriz_confusion)
