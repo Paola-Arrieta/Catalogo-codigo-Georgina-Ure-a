@@ -1,0 +1,512 @@
+#       return(NULL)
+#     }
+#     forecast(., h = length(prueba))
+#   })
+#
+#   # el error es calculado para cada predicción
+#   error <- purrr::map_dbl(predictions, ~{
+#     if (is.null(.)) {
+#       return(Inf)
+#     }
+#     sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+#   })
+#
+#   # se retorna el modelo con el error más bajo
+#   best_model <- models[[which.min(error)]]
+#   p <- params[[which.min(error)]]
+#   best_model$call <- call("arima", x = quote(datos), order = as.numeric(c(p$a,
+#                                                                           p$b, p$c)), seasonal = list(order = as.numeric(c(p$d, p$e, p$f)), period = periodo))
+#   return(best_model)
+# }
+#
+# # ARIMA es calibrado con la función anterior con escaneos hasta 5 para los parámetros D y Q (D = 5 y Q = 5, entre más altos sean los valores, más puede tardar el proceso)
+# calibrar_arima(serie_training, periodo = 12, 0:5, 0:5)
+#
+# # Arima calibrado con los parámetros sugeridos
+# model_calibrated_arima = arima(serie_training, order = c(1, 4, 4), seasonal = list(order = c(0, 0, 0), period = 12))
+# model_calibrated_arima
+#
+# # Predicciones con Arima calibrado
+# pred_calibrated_arima = predict(model_calibrated_arima, n.ahead = n_testing)
+# pred_calibrated_arima
+#
+#
+# # Holt - Winters
+#
+# # Modelos Holt-Winters
+# model_HW = HoltWinters(serie_training)
+# model_HW
+#
+# # Predicciones con Holt-Winters
+# pred_HW = predict(model_HW, n.ahead = n_testing)
+# pred_HW
+# Función para calibrar Holt-Winters
+calibrar_HW <- function(entrenamiento, prueba, paso = 0.1) {
+# todas las combinaciones son calculadas para los parámetros
+params <- purrr::cross(list(a = seq(0, 1, by = paso), b = seq(0, 1, by = paso),
+g = seq(0, 1, by = paso)))
+# un modelo es calculado para cada combinación de parámetros
+hw_secure <- purrr::possibly(stats::HoltWinters, otherwise = NULL)
+models <- purrr::map(params, ~suppressWarnings(hw_secure(entrenamiento, alpha = ifelse(.$a ==
+0, F, .$a), beta = ifelse(.$b == 0, F, .$b), gamma = ifelse(.$g == 0, F,
+.$g))))
+# la predicción es calculada para cada modelo
+predictions <- purrr::map(models, ~{
+if (is.null(.)) {
+return(NULL)
+}
+forecast(., h = length(prueba))
+})
+# el error es calculado para cada predicción
+error <- purrr::map_dbl(predictions, ~{
+if (is.null(.)) {
+return(Inf)
+}
+sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+})
+# se retorna el modelo con el error más bajo
+best_model <- models[[which.min(error)]]
+p <- params[[which.min(error)]]
+best_model$call <- call("HoltWinters", x = quote(datos), alpha = ifelse(p$a ==
+0, F, p$a), beta = ifelse(p$b == 0, F, p$b), gamma = ifelse(p$g == 0, F,
+p$g))
+return(best_model)
+}
+# Holt-Winters es calibrado con la función anterior
+calibrar_HW(serie_training, serie_testing)
+# Modelo Holt-Winters calibrado con los parámetros sugeridos
+model_calibrated_HW = HoltWinters(x = serie_training, alpha = calibrar_HW(serie_training, serie_testing)$alpha, beta = calibrar_HW(serie_training, serie_testing)$beta, gamma = calibrar_HW(serie_training, serie_testing)$gamma)
+model_calibrated_HW
+# Predicciones con Holt-Winters calibrado
+# pred_calibrated_HW = predict(model_calibrated_HW, n.ahead = n_testing)
+# pred_calibrated_HW
+# # Todas las predicciones con autoplot
+# autoplot(serie_training, xlab = "Fecha", ylab = "", main = "Montos totales de recuperacion para Costa Rica") +
+#   autolayer(serie_testing, series = "Original") +
+#   autolayer(pred_arima$pre, series = "ARIMA") +
+#   autolayer(pred_calibrated_arima$pred, series = "ARIMA calibrado") +
+#   autolayer(pred_HW, series = "Holt-Winters") +
+#   autolayer(pred_calibrated_HW, series = "Holt-Winters calibrado") +
+#   guides(colour = guide_legend(title = "Predicciones"))
+# # Errores
+#
+# # RSS - Residual sum of squares (Error estándar de los residuos)
+# RSS <- function(Pred, Real) {
+#   return(sum((Real - Pred)^2))
+# }
+#
+# # MSE - Mean squared error (Error cuadrático medio): Calcula el promedio de los errores elevados al cuadrado
+# MSE <- function(Pred, Real) {
+#   N <- length(Real)
+#   rss <- sum((Real - Pred)^2)
+#   return((1/N) * rss)
+# }
+#
+# # RMSE - Root mean squared error (Raíz del error cuadrático medio)
+# RMSE <- function(Pred, Real) {
+#   N <- length(Real)
+#   rss <- sum((Real - Pred)^2)
+#   return(sqrt((1/N) * rss))
+# }
+#
+# # PFA - Porcentaje de veces en las que el pronóstico fue mayor o igual a la realidad
+# PFA <- function(Pred, Real) {
+#   Total <- 0
+#   N <- length(Pred)
+#   for(i in 1:N) {
+#     if(Pred[i] > Real[i])
+#       Total <- Total + 1
+#   }
+#   return(Total/N)
+# }
+#
+# # PTFA - Porcentaje de fallos hacia arriba en términos absolutos. Es decir, donde el pronóstico fue mayor o igual a la realidad
+# PTFA <- function(Pred, Real) {
+#   Total <- 0
+#   SReal <- 0
+#   N <- length(Pred)
+#   for(i in 1:N) {
+#     if(Pred[i] > Real[i]) {
+#       Total <- Total + (Pred[i] - Real[i])
+#       SReal <- SReal + abs(Real[i])
+#     }
+#   }
+#   if(Total == 0)
+#     SReal = 1
+#   return(Total/SReal)
+# }
+#
+# # Se obtienen todos los errores. Todas las predicciones en una lista y el valor real deben pasar como parámetros
+# tabla.errores <- function(predicciones, real, nombres = NULL) {
+#   r <- data.frame()
+#   for (pred in predicciones) {
+#     r <- rbind(r, data.frame(
+#       'MSE' = MSE(pred, real), 'RMSE' = RMSE(pred, real),
+#       'PFA' = PFA(pred, real), 'PTFA' = PTFA(pred, real)
+#     )
+#     )
+#   }
+#   row.names(r) <- nombres
+#   return(r)
+# }
+#
+# errors <- tabla.errores(
+#   predicciones = list(pred_arima$pre, pred_calibrated_arima$pred, pred_HW, pred_calibrated_HW),
+#   real = serie,
+#   nombres = c("ARIMA", "ARIMA calibrado", "Holt-Winters", "Holt-Winters calibrado")
+# )
+#
+# errors
+# # El cuadro detalla los índices de error para cada uno de los modelos planteados. De esta manera se confirma que Arima calibrado no es la mejor opción, ya que sus valores en MSE y RMSE son muy altos, mientras que Holt-Winters calibrado muestra lo contrario.
+#
+# # Se grafican los errores. La función recibe un data frame con todos los errores a graficar (la tabla de datos obtenida con la función previa)
+# grafico.errores <- function (errors) {
+#
+#   centros <- as.data.frame(apply(errors, 2, function(i)
+#     scales::rescale(i, to = c(0, 100))))
+#
+#   res <- melt(t(centros), varnames = c("E", "Modelos"))
+#   res <- res[order(res$E, decreasing = F), ]
+#   res$M <- as.character(res$M)
+#   y = c(0, 25, 50, 75, 100)
+#
+#   ggplot(res, aes(x = E, y = value, group = Modelos, color = Modelos, fill = Modelos)) +
+#     geom_polygon(alpha = 0.3, size = 1) + geom_point(size = 3) +
+#     theme_minimal() + theme(axis.text.y = element_blank()) + xlab("") +
+#     ylab("") + scale_y_continuous(limits = c(-10, 100), breaks = y) +
+#     annotate("text", x = 0.5, y = y, label = paste0(y, "%"), color = "gray60") +
+#     ggproto("CordRadar", CoordPolar, theta = "x", r = "y",
+#             start = 0, direction = sign(1))
+# }
+#
+# grafico.errores(errors)
+#
+# # Se confirma, nuevamente, que el mejor modelo es Holt-Winters calibrado porque muestra valores más bajos para MSE y RMSE y PTFA.
+# --- ETAPA 3: MODELO DE PREDICCIÓN SELECCIONADO
+# Mejor modelo
+# Mejor modelo: Holt-Winters calibrado Se utiliza forecast para los límites de confianza.
+# Parámetros
+model_calibrated_HW_alpha = model_calibrated_HW$alpha
+model_calibrated_HW_beta = model_calibrated_HW$beta
+model_calibrated_HW_gamma = model_calibrated_HW$gamma
+# Modelo Holt-Winters calibrado
+final_model = HoltWinters(x = serie, alpha = model_calibrated_HW_alpha, beta = model_calibrated_HW_beta, gamma = model_calibrated_HW_gamma)
+final_model
+# Predicciones con Holt-Winters calibrado
+final_pred = forecast(final_model, h = 6, level = c(95))
+final_pred
+# De esta manera se muestran las predicciones para los últimos meses de este 2023 y el primer trimestre del 2024, así como sus respectivos intervalos con 95% de confianza.
+# Unión de las predicciones
+p = ts.union(prediction = final_pred$mean, LowerConfidenceLimit = final_pred$lower, UpperConfidenceLimit = final_pred$upper)
+# Todas las predicciones
+final_predictions = ts.union(serie, p)
+final_predictions
+# Fecha final para la serie original
+final_date = cr_pagos_multivalores$FECHA_PAGO[nrow(cr_pagos_multivalores)]
+final_date
+# Nuevas fechas para las predicciones
+dates = final_date + months(1:6)
+dates
+# Unión de las nuevas fechas con las fechas de la serie original
+total_dates = c(cr_pagos_multivalores$FECHA_PAGO, dates)
+# Predicciones finales con dygraph
+predictions = xts(xts(final_predictions, order.by = total_dates))
+# dygraph(predictions, width = "100%", ylab = "Monto", main = "Monto de recuperacion para Costa Rica") %>%
+#   dySeries(c("p.LowerConfidenceLimit", "p.prediction", "p.UpperConfidenceLimit"), label = "Prediction") %>%
+#   dyRangeSelector(height = 20, strokeColor = "Gray") %>%
+#   dyOptions(maxNumberWidth = 20) %>%
+#   dyAxis("y", valueRange = c(0, 4500000))
+# # Lo anterior es la representación gráfica de las predicciones generadas y sus intervalos de confianza correspondientes.
+# Predicciones finales como data.frame
+fechas_finales = as.data.frame(total_dates)
+predicciones_finales =  as.data.frame(predictions)
+predicciones_finales_multivalores = cbind(fechas_finales,predicciones_finales) %>%
+as.data.frame()
+names(predicciones_finales_multivalores) = c("Fecha", "Monto_real", "Estimacion_puntual", "Limite_confianza_inferior", "Limite_confianza_superior")
+predicciones_finales_multivalores = predicciones_finales_multivalores %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior<0, 0))
+# Guardar los resultados en formato RDS
+saveRDS(predicciones_finales_multivalores, "predicciones_finales_multivalores.rds")
+predicciones_finales_multivalores <- readRDS("C:/Users/gurenab/Documents/Predicción de recuperación/src/Costa_Rica/Instituciones/Multivalores/predicciones_finales_multivalores.rds")
+View(predicciones_finales_multivalores)
+library(DBI)
+library(dplyr)
+library(fable)
+library(forecast)
+library(lubridate)
+library(odbc)
+library(tsibble)
+library(tidyr)
+library(padr) #When there are missing records for time points where observations were absent, pad will automatically insert these records
+library(purrr)
+library(xts)
+library(zoo)
+# Se realiza la conexión para la carga del dataset.
+connection <- dbConnect(odbc(),
+Driver = "SQL Server",
+Server = "200.74.250.96",
+Database = "XPERSOFT_BD",
+UID = "gurena",
+PWD = "CC#E!rMzuWz3gjw@")
+# Se obtiene el dataset de interés.
+cr_pagos_multivalores_data = dbGetQuery(connection, "
+SELECT TIPO_CARTERA AS TIPO_CARTERA, INSTITUCION AS INSTITUCION,
+FECHA_PAGO AS FECHA_PAGO, MONTO_RECIBO AS MONTO_RECIBO
+FROM CRED_PAGOS
+WHERE PAI_NOMBRE = 'COSTA RICA'
+AND TIPO_CARTERA = 'Propia'
+AND INSTITUCION = 'Financiera Multivalores'
+AND MONTO_RECIBO >= 5000.000
+")
+# Se cierra la conexión.
+dbDisconnect(connection)
+# str(cr_pagos_multivalores_data)
+cr_pagos_multivalores_data$FECHA_PAGO = as.Date(cr_pagos_multivalores_data$FECHA_PAGO,format="%d/%m/%Y")
+cr_pagos_multivalores = cr_pagos_multivalores_data %>%
+group_by(INSTITUCION, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO)) %>%
+# Add missing dates per month
+pad() %>%
+as.data.frame()
+View(cr_pagos_multivalores)
+# Se completa la primera columna
+cr_pagos_multivalores$INSTITUCION = replace_na(as.character(cr_pagos_multivalores$INSTITUCION), "Financiera Multivalores")
+# Se interpolan los valores perdidos
+cr_pagos_multivalores = cr_pagos_multivalores %>%
+mutate(MONTO_TOTAL=na.approx(MONTO_TOTAL))
+# El primer registro es 2013-07-01. Para mayor consistencia en el dataset, comienzo la serie el 2016-05-01. Decido dejar como última observación el mes anterior al actual completo.
+init_first_month = '2016-05-01'
+init_first_month_month = month(init_first_month)
+init_first_month_year = year(init_first_month)
+currentDate = Sys.Date()
+end_last_month = rollback(currentDate)
+init_last_month = rollback(end_last_month, roll_to_first = TRUE)
+cr_pagos_multivalores = cr_pagos_multivalores %>%
+filter(FECHA_PAGO >= init_first_month & FECHA_PAGO <= init_last_month)
+View(cr_pagos_multivalores)
+# Se crea la serie de tiempo. El patrón estacional es mensual, por eso la frecuencia es 12
+serie = ts(cr_pagos_multivalores$MONTO_TOTAL, start = c(init_first_month_year,init_first_month_month), frequency = 12)
+# Decido utilizar para testing el 20% de la data
+proporcion_training = 0.80
+indices_training = length(serie)*proporcion_training
+# Se crea la tabla para training
+serie_training = head(serie, indices_training)
+# Se crea la tabla de testing
+serie_testing = tail(serie, -indices_training)
+# head(serie_testing)
+# tail(serie_testing)
+n_testing = length(serie_testing)
+# Función para calibrar Holt-Winters
+calibrar_HW <- function(entrenamiento, prueba, paso = 0.1) {
+# todas las combinaciones son calculadas para los parámetros
+params <- purrr::cross(list(a = seq(0, 1, by = paso), b = seq(0, 1, by = paso),
+g = seq(0, 1, by = paso)))
+# un modelo es calculado para cada combinación de parámetros
+hw_secure <- purrr::possibly(stats::HoltWinters, otherwise = NULL)
+models <- purrr::map(params, ~suppressWarnings(hw_secure(entrenamiento, alpha = ifelse(.$a ==
+0, F, .$a), beta = ifelse(.$b == 0, F, .$b), gamma = ifelse(.$g == 0, F,
+.$g))))
+# la predicción es calculada para cada modelo
+predictions <- purrr::map(models, ~{
+if (is.null(.)) {
+return(NULL)
+}
+forecast(., h = length(prueba))
+})
+# el error es calculado para cada predicción
+error <- purrr::map_dbl(predictions, ~{
+if (is.null(.)) {
+return(Inf)
+}
+sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+})
+# se retorna el modelo con el error más bajo
+best_model <- models[[which.min(error)]]
+p <- params[[which.min(error)]]
+best_model$call <- call("HoltWinters", x = quote(datos), alpha = ifelse(p$a ==
+0, F, p$a), beta = ifelse(p$b == 0, F, p$b), gamma = ifelse(p$g == 0, F,
+p$g))
+return(best_model)
+}
+# Holt-Winters es calibrado con la función anterior
+calibrar_HW(serie_training, serie_testing)
+# Modelo Holt-Winters calibrado con los parámetros sugeridos
+model_calibrated_HW = HoltWinters(x = serie_training, alpha = calibrar_HW(serie_training, serie_testing)$alpha, beta = calibrar_HW(serie_training, serie_testing)$beta, gamma = calibrar_HW(serie_training, serie_testing)$gamma)
+model_calibrated_HW
+# Parámetros
+model_calibrated_HW_alpha = model_calibrated_HW$alpha
+model_calibrated_HW_beta = model_calibrated_HW$beta
+model_calibrated_HW_gamma = model_calibrated_HW$gamma
+# Modelo Holt-Winters calibrado
+final_model = HoltWinters(x = serie, alpha = model_calibrated_HW_alpha, beta = model_calibrated_HW_beta, gamma = model_calibrated_HW_gamma)
+final_model
+# Predicciones con Holt-Winters calibrado
+final_pred = forecast(final_model, h = 6, level = c(95))
+final_pred
+# Unión de las predicciones
+p = ts.union(prediction = final_pred$mean, LowerConfidenceLimit = final_pred$lower, UpperConfidenceLimit = final_pred$upper)
+# Todas las predicciones
+final_predictions = ts.union(serie, p)
+final_predictions
+# Fecha final para la serie original
+final_date = cr_pagos_multivalores$FECHA_PAGO[nrow(cr_pagos_multivalores)]
+final_date
+# Nuevas fechas para las predicciones
+dates = final_date + months(1:6)
+dates
+# Unión de las nuevas fechas con las fechas de la serie original
+total_dates = c(cr_pagos_multivalores$FECHA_PAGO, dates)
+# Predicciones finales con dygraph
+predictions = xts(xts(final_predictions, order.by = total_dates))
+# Predicciones finales como data.frame
+fechas_finales = as.data.frame(total_dates)
+predicciones_finales =  as.data.frame(predictions)
+predicciones_finales_multivalores = cbind(fechas_finales,predicciones_finales) %>%
+as.data.frame()
+names(predicciones_finales_multivalores) = c("Fecha", "Monto_real", "Estimacion_puntual", "Limite_confianza_inferior", "Limite_confianza_superior")
+predicciones_finales_multivalores = predicciones_finales_multivalores %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior<0, 0))
+View(predicciones_finales_multivalores)
+cr_pagos_multivalores = cr_pagos_multivalores_data %>%
+group_by(INSTITUCION, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO)) %>%
+# Add missing dates per month
+pad() %>%
+as.data.frame()
+View(cr_pagos_multivalores)
+library(DBI)
+library(dplyr)
+library(fable)
+library(forecast)
+library(lubridate)
+library(odbc)
+library(tsibble)
+library(tidyr)
+library(padr) #When there are missing records for time points where observations were absent, pad will automatically insert these records
+library(purrr)
+library(xts)
+library(zoo)
+# Se realiza la conexión para la carga del dataset.
+connection <- dbConnect(odbc(),
+Driver = "SQL Server",
+Server = "200.74.250.96",
+Database = "XPERSOFT_BD",
+UID = "gurena",
+PWD = "CC#E!rMzuWz3gjw@")
+# Se obtiene el dataset de interés.
+cr_pagos_multivalores_data = dbGetQuery(connection, "
+SELECT TIPO_CARTERA AS TIPO_CARTERA, INSTITUCION AS INSTITUCION,
+FECHA_PAGO AS FECHA_PAGO, MONTO_RECIBO AS MONTO_RECIBO
+FROM CRED_PAGOS
+WHERE PAI_NOMBRE = 'COSTA RICA'
+AND TIPO_CARTERA = 'Propia'
+AND INSTITUCION = 'Financiera Multivalores'
+AND MONTO_RECIBO >= 5000.000
+")
+# Se cierra la conexión.
+dbDisconnect(connection)
+# str(cr_pagos_multivalores_data)
+cr_pagos_multivalores_data$FECHA_PAGO = as.Date(cr_pagos_multivalores_data$FECHA_PAGO,format="%d/%m/%Y")
+cr_pagos_multivalores = cr_pagos_multivalores_data %>%
+group_by(INSTITUCION, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO)) %>%
+# Add missing dates per month
+pad() %>%
+as.data.frame()
+View(cr_pagos_multivalores)
+predicciones_finales_multivalores <- readRDS("C:/Users/gurenab/Documents/Predicción de recuperación/src/Costa_Rica/Instituciones/Multivalores/predicciones_finales_multivalores.rds")
+View(predicciones_finales_multivalores)
+# El primer registro es 2013-07. Decido dejar como última observación el mes anterior al actual completo.
+init_first_month = cr_pagos_multivalores$FECHA_PAGO[1]
+init_first_month_month = month(init_first_month)
+init_first_month_year = year(init_first_month)
+currentDate = Sys.Date()
+end_last_month = rollback(currentDate)
+init_last_month = rollback(end_last_month, roll_to_first = TRUE)
+cr_pagos_multivalores = cr_pagos_multivalores %>%
+filter(FECHA_PAGO >= init_first_month & FECHA_PAGO <= init_last_month)
+# Se crea la serie de tiempo. El patrón estacional es mensual, por eso la frecuencia es 12
+serie = ts(cr_pagos_multivalores$MONTO_TOTAL, start = c(init_first_month_year,init_first_month_month), frequency = 12)
+# Decido utilizar para testing el 20% de la data
+proporcion_training = 0.80
+indices_training = length(serie)*proporcion_training
+# Se crea la tabla para training
+serie_training = head(serie, indices_training)
+# Se crea la tabla de testing
+serie_testing = tail(serie, -indices_training)
+# head(serie_testing)
+# tail(serie_testing)
+n_testing = length(serie_testing)
+# Función para calibrar Holt-Winters
+calibrar_HW <- function(entrenamiento, prueba, paso = 0.1) {
+# todas las combinaciones son calculadas para los parámetros
+params <- purrr::cross(list(a = seq(0, 1, by = paso), b = seq(0, 1, by = paso),
+g = seq(0, 1, by = paso)))
+# un modelo es calculado para cada combinación de parámetros
+hw_secure <- purrr::possibly(stats::HoltWinters, otherwise = NULL)
+models <- purrr::map(params, ~suppressWarnings(hw_secure(entrenamiento, alpha = ifelse(.$a ==
+0, F, .$a), beta = ifelse(.$b == 0, F, .$b), gamma = ifelse(.$g == 0, F,
+.$g))))
+# la predicción es calculada para cada modelo
+predictions <- purrr::map(models, ~{
+if (is.null(.)) {
+return(NULL)
+}
+forecast(., h = length(prueba))
+})
+# el error es calculado para cada predicción
+error <- purrr::map_dbl(predictions, ~{
+if (is.null(.)) {
+return(Inf)
+}
+sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+})
+# se retorna el modelo con el error más bajo
+best_model <- models[[which.min(error)]]
+p <- params[[which.min(error)]]
+best_model$call <- call("HoltWinters", x = quote(datos), alpha = ifelse(p$a ==
+0, F, p$a), beta = ifelse(p$b == 0, F, p$b), gamma = ifelse(p$g == 0, F,
+p$g))
+return(best_model)
+}
+# Holt-Winters es calibrado con la función anterior
+calibrar_HW(serie_training, serie_testing)
+# Modelo Holt-Winters calibrado con los parámetros sugeridos
+model_calibrated_HW = HoltWinters(x = serie_training, alpha = calibrar_HW(serie_training, serie_testing)$alpha, beta = calibrar_HW(serie_training, serie_testing)$beta, gamma = calibrar_HW(serie_training, serie_testing)$gamma)
+model_calibrated_HW
+# Parámetros
+model_calibrated_HW_alpha = model_calibrated_HW$alpha
+model_calibrated_HW_beta = model_calibrated_HW$beta
+model_calibrated_HW_gamma = model_calibrated_HW$gamma
+# Modelo Holt-Winters calibrado
+final_model = HoltWinters(x = serie, alpha = model_calibrated_HW_alpha, beta = model_calibrated_HW_beta, gamma = model_calibrated_HW_gamma)
+final_model
+# Predicciones con Holt-Winters calibrado
+final_pred = forecast(final_model, h = 6, level = c(95))
+final_pred
+# Unión de las predicciones
+p = ts.union(prediction = final_pred$mean, LowerConfidenceLimit = final_pred$lower, UpperConfidenceLimit = final_pred$upper)
+# Todas las predicciones
+final_predictions = ts.union(serie, p)
+final_predictions
+# Fecha final para la serie original
+final_date = cr_pagos_multivalores$FECHA_PAGO[nrow(cr_pagos_multivalores)]
+final_date
+# Nuevas fechas para las predicciones
+dates = final_date + months(1:6)
+dates
+# Unión de las nuevas fechas con las fechas de la serie original
+total_dates = c(cr_pagos_multivalores$FECHA_PAGO, dates)
+# Predicciones finales con dygraph
+predictions = xts(xts(final_predictions, order.by = total_dates))
+# Predicciones finales como data.frame
+fechas_finales = as.data.frame(total_dates)
+predicciones_finales =  as.data.frame(predictions)
+predicciones_finales_multivalores = cbind(fechas_finales,predicciones_finales) %>%
+as.data.frame()
+names(predicciones_finales_multivalores) = c("Fecha", "Monto_real", "Estimacion_puntual", "Limite_confianza_inferior", "Limite_confianza_superior")
+predicciones_finales_multivalores = predicciones_finales_multivalores %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior<0, 0))
+View(predicciones_finales_multivalores)
+# Guardar los resultados en formato RDS
+saveRDS(predicciones_finales_multivalores, "predicciones_finales_multivalores.rds")

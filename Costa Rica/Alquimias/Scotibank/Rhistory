@@ -1,0 +1,512 @@
+# # Auto ARIMA
+#
+# # Modelo Auto Arima
+# model_auto_arima = auto.arima(serie_training)
+# model_auto_arima
+#
+# # Modelo Arima con los parámetros sugeridos por el Auto Arima
+# model_arima = arima(serie_training, order = c(0,0,0), seasonal = list(order = c(0,0,0), period = 12))
+# model_arima
+#
+# # Predicciones con ARIMA
+# pred_arima = predict(model_arima, n.ahead = n_testing)
+# pred_arima
+#
+# # Arima calibrado
+# calibrar_arima <- function(entrenamiento = NULL, prueba = NULL, periodo = NA_integer_,
+#                            ar = 0:2, es = 0:1) {
+#   # todas las combinaciones son calculadas para los parámetros
+#   params <- purrr::cross(list(a = ar, b = ar, c = ar, d = es, e = es, f = es))
+#
+#   # un modelo es calculado para cada combinación de parámetros
+#   arima_secure <- purrr::possibly(stats::arima, otherwise = NULL)
+#   models <- purrr::map(params, ~suppressWarnings(arima_secure(entrenamiento, order = c(.$a,
+#                                                                                        .$b, .$c), seasonal = list(order = c(.$d, .$e, .$f), period = periodo))))
+#
+#   # la predicción es calculada con cada modelo
+#   predictions <- purrr::map(models, ~{
+#     if (is.null(.)) {
+#       return(NULL)
+#     }
+#     forecast(., h = length(prueba))
+#   })
+#
+#   # el error es calculado para cada predicción
+#   error <- purrr::map_dbl(predictions, ~{
+#     if (is.null(.)) {
+#       return(Inf)
+#     }
+#     sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+#   })
+#
+#   # se retorna el modelo con el error más bajo
+#   best_model <- models[[which.min(error)]]
+#   p <- params[[which.min(error)]]
+#   best_model$call <- call("arima", x = quote(datos), order = as.numeric(c(p$a,
+#                                                                           p$b, p$c)), seasonal = list(order = as.numeric(c(p$d, p$e, p$f)), period = periodo))
+#   return(best_model)
+# }
+#
+#
+# # ARIMA es calibrado con la función anterior con escaneos hasta 5 para los parámetros D y Q (D = 5 y Q = 5, entre más altos sean los valores, más puede tardar el proceso)
+# calibrar_arima(serie_training, periodo = 12, 0:5, 0:5)
+#
+# # Arima calibrado con los parámetros sugeridos
+# model_calibrated_arima = arima(serie_training, order = c(1, 2, 0), seasonal = list(order = c(0, 1, 1), period = 12))
+# model_calibrated_arima
+#
+# # Predicciones con Arima calibrado
+# pred_calibrated_arima = predict(model_calibrated_arima, n.ahead = n_testing)
+# pred_calibrated_arima
+#
+#
+# # Holt - Winters
+#
+# # Modelos Holt-Winters
+# model_HW = HoltWinters(serie_training)
+# model_HW
+#
+# # Predicciones con Holt-Winters
+# pred_HW = predict(model_HW, n.ahead = n_testing)
+# pred_HW
+# Función para calibrar Holt-Winters
+calibrar_HW <- function(entrenamiento, prueba, paso = 0.1) {
+# todas las combinaciones son calculadas para los parámetros
+params <- purrr::cross(list(a = seq(0, 1, by = paso), b = seq(0, 1, by = paso),
+g = seq(0, 1, by = paso)))
+# un modelo es calculado para cada combinación de parámetros
+hw_secure <- purrr::possibly(stats::HoltWinters, otherwise = NULL)
+models <- purrr::map(params, ~suppressWarnings(hw_secure(entrenamiento, alpha = ifelse(.$a ==
+0, F, .$a), beta = ifelse(.$b == 0, F, .$b), gamma = ifelse(.$g == 0, F,
+.$g))))
+# la predicción es calculada para cada modelo
+predictions <- purrr::map(models, ~{
+if (is.null(.)) {
+return(NULL)
+}
+forecast(., h = length(prueba))
+})
+# el error es calculado para cada predicción
+error <- purrr::map_dbl(predictions, ~{
+if (is.null(.)) {
+return(Inf)
+}
+sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+})
+# se retorna el modelo con el error más bajo
+best_model <- models[[which.min(error)]]
+p <- params[[which.min(error)]]
+best_model$call <- call("HoltWinters", x = quote(datos), alpha = ifelse(p$a ==
+0, F, p$a), beta = ifelse(p$b == 0, F, p$b), gamma = ifelse(p$g == 0, F,
+p$g))
+return(best_model)
+}
+# Holt-Winters es calibrado con la función anterior
+calibrar_HW(serie_training, serie_testing)
+# Modelo Holt-Winters calibrado con los parámetros sugeridos
+model_calibrated_HW = HoltWinters(x = serie_training, alpha = calibrar_HW(serie_training, serie_testing)$alpha, beta = calibrar_HW(serie_training, serie_testing)$beta, gamma = calibrar_HW(serie_training, serie_testing)$gamma)
+model_calibrated_HW
+# Predicciones con Holt-Winters calibrado
+pred_calibrated_HW = predict(model_calibrated_HW, n.ahead = n_testing)
+pred_calibrated_HW
+# # Todas las predicciones con autoplot
+# autoplot(serie_training, xlab = "Fecha", ylab = "", main = "Montos totales de recuperacion para Scotiabank - Alquimia 006") +
+#   autolayer(serie_testing, series = "Original") +
+#   autolayer(pred_arima$pre, series = "ARIMA") +
+#   autolayer(pred_calibrated_arima$pred, series = "ARIMA calibrado") +
+#   autolayer(pred_HW, series = "Holt-Winters") +
+#   autolayer(pred_calibrated_HW, series = "Holt-Winters calibrado") +
+#   guides(colour = guide_legend(title = "Predicciones"))
+#
+#
+# # Errores
+#
+# # RSS - Residual sum of squares (Error estándar de los residuos)
+# RSS <- function(Pred, Real) {
+#   return(sum((Real - Pred)^2))
+# }
+#
+# # MSE - Mean squared error (Error cuadrático medio): Calcula el promedio de los errores elevados al cuadrado
+# MSE <- function(Pred, Real) {
+#   N <- length(Real)
+#   rss <- sum((Real - Pred)^2)
+#   return((1/N) * rss)
+# }
+#
+# # RMSE - Root mean squared error (Raíz del error cuadrático medio)
+# RMSE <- function(Pred, Real) {
+#   N <- length(Real)
+#   rss <- sum((Real - Pred)^2)
+#   return(sqrt((1/N) * rss))
+# }
+#
+# # PFA - Porcentaje de veces en las que el pronóstico fue mayor o igual a la realidad
+# PFA <- function(Pred, Real) {
+#   Total <- 0
+#   N <- length(Pred)
+#   for(i in 1:N) {
+#     if(Pred[i] > Real[i])
+#       Total <- Total + 1
+#   }
+#   return(Total/N)
+# }
+#
+# # PTFA - Porcentaje de fallos hacia arriba en términos absolutos. Es decir, donde el pronóstico fue mayor o igual a la realidad
+# PTFA <- function(Pred, Real) {
+#   Total <- 0
+#   SReal <- 0
+#   N <- length(Pred)
+#   for(i in 1:N) {
+#     if(Pred[i] > Real[i]) {
+#       Total <- Total + (Pred[i] - Real[i])
+#       SReal <- SReal + abs(Real[i])
+#     }
+#   }
+#   if(Total == 0)
+#     SReal = 1
+#   return(Total/SReal)
+# }
+#
+# # Se obtienen todos los errores. Todas las predicciones en una lista y el valor real deben pasar como parámetros
+# tabla.errores <- function(predicciones, real, nombres = NULL) {
+#   r <- data.frame()
+#   for (pred in predicciones) {
+#     r <- rbind(r, data.frame(
+#       'MSE' = MSE(pred, real), 'RMSE' = RMSE(pred, real),
+#       'PFA' = PFA(pred, real), 'PTFA' = PTFA(pred, real)
+#     )
+#     )
+#   }
+#   row.names(r) <- nombres
+#   return(r)
+# }
+#
+# errors <- tabla.errores(
+#   predicciones = list(pred_arima$pre, pred_calibrated_arima$pred, pred_HW, pred_calibrated_HW),
+#   real = serie,
+#   nombres = c("ARIMA", "ARIMA calibrado", "Holt-Winters", "Holt-Winters calibrado")
+# )
+#
+# errors
+# # El cuadro anterior detalla los índices de error para cada uno de los modelos planteados. De esta manera se confirma que Arima calibrado no es la mejor opción, ya que sus valores en MSE y RMSE son muy altos, mientras que Holt-Winters calibrado muestra lo contrario.
+#
+# # Se grafican los errores. La función recibe un data frame con todos los errores a graficar (la tabla de datos obtenida con la función previa)
+# grafico.errores <- function (errors) {
+#
+#   centros <- as.data.frame(apply(errors, 2, function(i)
+#     scales::rescale(i, to = c(0, 100))))
+#
+#   res <- melt(t(centros), varnames = c("E", "Modelos"))
+#   res <- res[order(res$E, decreasing = F), ]
+#   res$M <- as.character(res$M)
+#   y = c(0, 25, 50, 75, 100)
+#
+#   ggplot(res, aes(x = E, y = value, group = Modelos, color = Modelos, fill = Modelos)) +
+#     geom_polygon(alpha = 0.3, size = 1) + geom_point(size = 3) +
+#     theme_minimal() + theme(axis.text.y = element_blank()) + xlab("") +
+#     ylab("") + scale_y_continuous(limits = c(-10, 100), breaks = y) +
+#     annotate("text", x = 0.5, y = y, label = paste0(y, "%"), color = "gray60") +
+#     ggproto("CordRadar", CoordPolar, theta = "x", r = "y",
+#             start = 0, direction = sign(1))
+# }
+#
+# grafico.errores(errors)
+#
+# # Se confirma, nuevamente, que el mejor modelo es Holt-Winters calibrado porque muestra valores más bajos para MSE y RMSE y PTFA, aunque ARIMA también.
+# --- ETAPA 3: MODELO DE PREDICCIÓN SELECCIONADO
+# Mejor modelo
+# Mejor modelo: Holt-Winters calibrado Se utiliza forecast para los límites de confianza.
+# Parámetros
+model_calibrated_HW_alpha = model_calibrated_HW$alpha
+model_calibrated_HW_beta = model_calibrated_HW$beta
+model_calibrated_HW_gamma = model_calibrated_HW$gamma
+# Modelo Holt-Winters calibrado
+final_model = HoltWinters(x = serie, alpha = model_calibrated_HW_alpha, beta = model_calibrated_HW_beta, gamma = model_calibrated_HW_gamma)
+final_model
+# Predicciones con Holt-Winters calibrado
+final_pred = forecast(final_model, h = 6, level = c(95))
+final_pred
+# De esta manera se muestran las predicciones para los últimos meses de este 2023 y el primer trimestre del 2024, así como sus respectivos intervalos con 95% de confianza.
+# Unión de las predicciones
+p = ts.union(prediction = final_pred$mean, LowerConfidenceLimit = final_pred$lower, UpperConfidenceLimit = final_pred$upper)
+# Todas las predicciones
+final_predictions = ts.union(serie, p)
+final_predictions
+# Fecha final para la serie original
+final_date = cr_pagos_scotiabank_alquimias_006$FECHA_PAGO[nrow(cr_pagos_scotiabank_alquimias_006)]
+final_date
+# Nuevas fechas para las predicciones
+dates = final_date + months(1:6)
+dates
+# Unión de las nuevas fechas con las fechas de la serie original
+total_dates = c(cr_pagos_scotiabank_alquimias_006$FECHA_PAGO, dates)
+# Predicciones finales con dygraph
+predictions = xts(xts(final_predictions, order.by = total_dates))
+# dygraph(predictions, width = "100%", ylab = "Monto", main = "Monto de recuperacion para Costa Rica") %>%
+#   dySeries(c("p.LowerConfidenceLimit", "p.prediction", "p.UpperConfidenceLimit"), label = "Prediction") %>%
+#   dyRangeSelector(height = 20, strokeColor = "Gray") %>%
+#   dyOptions(maxNumberWidth = 20) %>%
+#   dyAxis("y", valueRange = c(0, 150000000))
+# Lo anterior es la representación gráfica de las predicciones generadas y sus intervalos de confianza correspondientes.
+# Predicciones finales como data.frame
+fechas_finales = as.data.frame(total_dates)
+predicciones_finales =  as.data.frame(predictions)
+predicciones_finales_scotiabank_alquimia006 = cbind(fechas_finales,predicciones_finales) %>%
+as.data.frame()
+names(predicciones_finales_scotiabank_alquimia006) = c("Fecha", "Monto_real", "Estimacion_puntual", "Limite_confianza_inferior", "Limite_confianza_superior")
+predicciones_finales_scotiabank_alquimia006 = predicciones_finales_scotiabank_alquimia006 %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior<0, 0))
+# Guardar los resultados en formato RDS
+saveRDS(predicciones_finales_scotiabank_alquimia006, "predicciones_finales_scotiabank_alquimia006.rds")
+View(predicciones_finales_scotiabank_alquimia006)
+library(DBI)
+library(dplyr)
+library(fable)
+library(forecast)
+library(lubridate)
+library(odbc)
+library(tsibble)
+library(tidyr)
+library(tidyverse)
+library(padr) #When there are missing records for time points where observations were absent, pad will automatically insert these records
+library(purrr)
+library(xts)
+library(zoo)
+# Se realiza la conexión para la carga del dataset.
+connection <- dbConnect(odbc(),
+Driver = "SQL Server",
+Server = "200.74.250.96",
+Database = "XPERSOFT_BD",
+UID = "gurena",
+PWD = "CC#E!rMzuWz3gjw@")
+# Se obtiene el dataset de interés.
+# El análisis sólo se debe realizar para el tipo de cartera Propia, por lo cual se aplica este filtro. Adicionalmente, por indicaciones de Don Willie, se deben eliminar montos menores a 5000.
+cr_pagos_scotiabank_alquimias_data = dbGetQuery(connection, "
+SELECT TIPO_CARTERA AS TIPO_CARTERA, INSTITUCION AS INSTITUCION, ALQUIMIA AS ALQUIMIA,
+FECHA_PAGO AS FECHA_PAGO, MONTO_RECIBO AS MONTO_RECIBO
+FROM CRED_PAGOS
+WHERE PAI_NOMBRE = 'COSTA RICA'
+AND TIPO_CARTERA = 'Propia'
+AND INSTITUCION = 'SCOTIABANK'
+AND MONTO_RECIBO >= 5000.000
+")
+# Se cierra la conexión.
+dbDisconnect(connection)
+# Se preparan los datos.
+# str(cr_pagos_scotiabank_alquimias_data)
+cr_pagos_scotiabank_alquimias_data$FECHA_PAGO = as.Date(cr_pagos_scotiabank_alquimias_data$FECHA_PAGO,format="%d/%m/%Y")
+# Se agrupa el total de pagos por fecha, ya que el objetivo es pronosticar de forma global (en este caso) y no por cliente.
+cr_pagos_scotiabank_alquimias = cr_pagos_scotiabank_alquimias_data %>%
+group_by(INSTITUCION, ALQUIMIA, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO))
+# Se dejan las observaciones hasta el mes anterior completo actual. Por ejemplo, si la carga del dataset se realiza a mitad de octubre 2023, que tome como último valor aquel que, por alquimia, tenga registro en septiembre 2023.
+currentDate = Sys.Date()
+end_last_month = rollback(currentDate)
+init_last_month = rollback(end_last_month, roll_to_first = TRUE)
+alquimias_mes_anterior = cr_pagos_scotiabank_alquimias %>%
+select(-INSTITUCION) %>%
+filter(FECHA_PAGO <= init_last_month)
+# Se seleccionan las alquimias con al menos 24 observaciones, establecido como requisito mínimo para realizar las time series (los registros no son necesariamente en fechas consecutivas).
+alquimias_filtradas = alquimias_mes_anterior %>%
+group_by(ALQUIMIA) %>%
+filter(n() >= 24)
+# Se agregan las fechas que hacen falta por alquimia para tener observaciones consecutivas.
+alquimias_consecutivas = alquimias_filtradas %>%
+group_by(ALQUIMIA) %>%
+complete(FECHA_PAGO = seq.Date(min(FECHA_PAGO), max(FECHA_PAGO), by = "1 month"))
+# Se interpolan los valores faltantes.
+alquimias_interpoladas = alquimias_consecutivas %>%
+group_by(ALQUIMIA) %>%
+mutate(MONTO_TOTAL=zoo::na.approx(MONTO_TOTAL)) %>%
+ungroup()
+# Se crean las series de tiempo para cada alquimia.
+# Se utiliza nest para agrupar los datos por ALQUIMIA y luego se crea una lista de objetos xts para cada alquimia utilizando map. El resultado es una tabla que contiene las alquimias junto con sus respectivas series de tiempo en formato ts.
+alquimias_series_tiempo = alquimias_interpoladas %>%
+group_by(ALQUIMIA) %>%
+nest() %>%
+mutate(
+serie_tiempo = map(data, ~ {
+fechas <- as.Date(.x$FECHA_PAGO)
+ts(.x$MONTO_TOTAL, start = c(min(fechas), max(fechas)), frequency = 12)
+})
+) %>%
+select(ALQUIMIA, serie_tiempo) %>%
+ungroup()
+# Se ajustan modelos Holt-Winters y se almacenan en una lista para cada alquimia.
+alquimias_modelos_hw = alquimias_series_tiempo %>%
+mutate(modelo_hw = map(serie_tiempo, ~ HoltWinters(.x))) %>%
+select(ALQUIMIA, modelo_hw)
+# Se generan las predicciones con un horizonte de 6 meses y los intervalos de confianza para cada una de las alquimias.
+horizonte = 6
+# Se generan las predicciones con un horizonte de 6 meses y los intervalos de confianza para cada una de las alquimias.
+predicciones_hw_lista = alquimias_modelos_hw %>%
+mutate(
+predicciones = map(modelo_hw, ~ forecast(.x, h = horizonte, level = c(95)))
+) %>%
+mutate(
+predicciones_df = map2(predicciones, alquimias_series_tiempo$serie_tiempo, ~ {
+preds <- .x
+preds_mean <- as.numeric(preds$mean)
+alquimia <- tail(index(.y), 1)  # Obtener la última fecha de la serie de tiempo
+fecha_inicio_predicción <- as.Date(tail(index(.y), 1)) + 1 # Comenzar desde el siguiente mes
+fechas_predicción <- seq.Date(fecha_inicio_predicción, by = "1 month", length.out = horizonte)
+data.frame(Alquimia = rep(.y[1], horizonte),  # Acceder a ALQUIMIA mediante .y[1]
+Fecha_estimacion = fechas_predicción,
+Estimacion_puntual = preds_mean,
+Limite_confianza_inferior = as.numeric(preds$lower[,1]),
+Limite_confianza_superior = as.numeric(preds$upper[,1])
+)
+})
+) %>%
+select(ALQUIMIA, predicciones_df)
+predicciones_hw_tabla = predicciones_hw_lista %>%
+unnest() %>%
+as.data.frame() %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior < 0, 0))
+# Obtener la última fecha de pago para cada alquimia para calcular su respectivo horizonte de 6 meses
+fechas_prediccion = alquimias_interpoladas %>%
+group_by(ALQUIMIA) %>%
+summarize(ULTIMA_FECHA_PAGO = max(FECHA_PAGO)) %>%
+# Agregar 6 fechas más con un horizonte de 6 meses a partir de la última fecha de pago
+mutate(Fecha = map(ULTIMA_FECHA_PAGO, ~ seq.Date(.x + months(1), by = "1 month", length.out = 6))) %>%
+rename(ALQUIMIA_FECHAS = ALQUIMIA) %>%
+unnest(Fecha)
+predicciones_finales = cbind(fechas_prediccion,predicciones_hw_tabla) %>%
+select(ALQUIMIA, Fecha, Estimacion_puntual, Limite_confianza_inferior, Limite_confianza_superior) %>%
+as.data.frame()
+predicciones_finales_scotiabank_alquimias = bind_rows(alquimias_mes_anterior, predicciones_finales) %>%
+arrange(ALQUIMIA) %>%
+unite(Fecha_prueba, c(FECHA_PAGO, Fecha), na.rm = TRUE) %>%
+rename(Alquimia=ALQUIMIA, Fecha=Fecha_prueba, Monto_real=MONTO_TOTAL) %>%
+as.data.frame() %>%
+select(Alquimia,Fecha,Monto_real,Estimacion_puntual,Limite_confianza_inferior,Limite_confianza_superior) %>%
+arrange(Alquimia)
+# Guardar los resultados en formato RDS
+saveRDS(predicciones_finales_scotiabank_alquimias, "predicciones_finales_scotiabank_alquimias.rds")
+predicciones_finales_scotiabank_alquimias <- readRDS("C:/Users/gurenab/Documents/Predicción de recuperación/src/Costa_Rica/Alquimias/Scotiabank/predicciones_finales_scotiabank_alquimias.rds")
+View(predicciones_finales_scotiabank_alquimias)
+library(DBI)
+library(dplyr)
+library(fable)
+library(forecast)
+library(lubridate)
+library(odbc)
+library(tsibble)
+library(tidyr)
+library(tidyverse)
+library(padr) #When there are missing records for time points where observations were absent, pad will automatically insert these records
+library(purrr)
+library(xts)
+library(zoo)
+# Se realiza la conexión para la carga del dataset.
+connection <- dbConnect(odbc(),
+Driver = "SQL Server",
+Server = "200.74.250.96",
+Database = "XPERSOFT_BD",
+UID = "gurena",
+PWD = "CC#E!rMzuWz3gjw@")
+# Se obtiene el dataset de interés.
+# El análisis sólo se debe realizar para el tipo de cartera Propia, por lo cual se aplica este filtro. Adicionalmente, por indicaciones de Don Willie, se deben eliminar montos menores a 5000.
+cr_pagos_scotiabank_alquimias_data = dbGetQuery(connection, "
+SELECT TIPO_CARTERA AS TIPO_CARTERA, INSTITUCION AS INSTITUCION, ALQUIMIA AS ALQUIMIA,
+FECHA_PAGO AS FECHA_PAGO, MONTO_RECIBO AS MONTO_RECIBO
+FROM CRED_PAGOS
+WHERE PAI_NOMBRE = 'COSTA RICA'
+AND TIPO_CARTERA = 'Propia'
+AND INSTITUCION = 'SCOTIABANK'
+AND MONTO_RECIBO >= 5000.000
+")
+# Se cierra la conexión.
+dbDisconnect(connection)
+# Se preparan los datos.
+# str(cr_pagos_scotiabank_alquimias_data)
+cr_pagos_scotiabank_alquimias_data$FECHA_PAGO = as.Date(cr_pagos_scotiabank_alquimias_data$FECHA_PAGO,format="%d/%m/%Y")
+# Se agrupa el total de pagos por fecha, ya que el objetivo es pronosticar de forma global (en este caso) y no por cliente.
+cr_pagos_scotiabank_alquimias = cr_pagos_scotiabank_alquimias_data %>%
+group_by(INSTITUCION, ALQUIMIA, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO))
+# Se dejan las observaciones hasta el mes anterior completo actual. Por ejemplo, si la carga del dataset se realiza a mitad de octubre 2023, que tome como último valor aquel que, por alquimia, tenga registro en septiembre 2023.
+currentDate = Sys.Date()
+end_last_month = rollback(currentDate)
+init_last_month = rollback(end_last_month, roll_to_first = TRUE)
+alquimias_mes_anterior = cr_pagos_scotiabank_alquimias %>%
+select(-INSTITUCION) %>%
+filter(FECHA_PAGO <= init_last_month)
+# Se seleccionan las alquimias con al menos 24 observaciones, establecido como requisito mínimo para realizar las time series (los registros no son necesariamente en fechas consecutivas).
+alquimias_filtradas = alquimias_mes_anterior %>%
+group_by(ALQUIMIA) %>%
+filter(n() >= 24)
+# Se agregan las fechas que hacen falta por alquimia para tener observaciones consecutivas.
+alquimias_consecutivas = alquimias_filtradas %>%
+group_by(ALQUIMIA) %>%
+complete(FECHA_PAGO = seq.Date(min(FECHA_PAGO), max(FECHA_PAGO), by = "1 month"))
+# Se interpolan los valores faltantes.
+alquimias_interpoladas = alquimias_consecutivas %>%
+group_by(ALQUIMIA) %>%
+mutate(MONTO_TOTAL=zoo::na.approx(MONTO_TOTAL)) %>%
+ungroup()
+# Se crean las series de tiempo para cada alquimia.
+# Se utiliza nest para agrupar los datos por ALQUIMIA y luego se crea una lista de objetos xts para cada alquimia utilizando map. El resultado es una tabla que contiene las alquimias junto con sus respectivas series de tiempo en formato ts.
+alquimias_series_tiempo = alquimias_interpoladas %>%
+group_by(ALQUIMIA) %>%
+nest() %>%
+mutate(
+serie_tiempo = map(data, ~ {
+fechas <- as.Date(.x$FECHA_PAGO)
+ts(.x$MONTO_TOTAL, start = c(min(fechas), max(fechas)), frequency = 12)
+})
+) %>%
+select(ALQUIMIA, serie_tiempo) %>%
+ungroup()
+# Se ajustan modelos Holt-Winters y se almacenan en una lista para cada alquimia.
+alquimias_modelos_hw = alquimias_series_tiempo %>%
+mutate(modelo_hw = map(serie_tiempo, ~ HoltWinters(.x))) %>%
+select(ALQUIMIA, modelo_hw)
+# Se generan las predicciones con un horizonte de 6 meses y los intervalos de confianza para cada una de las alquimias.
+horizonte = 6
+# Se generan las predicciones con un horizonte de 6 meses y los intervalos de confianza para cada una de las alquimias.
+predicciones_hw_lista = alquimias_modelos_hw %>%
+mutate(
+predicciones = map(modelo_hw, ~ forecast(.x, h = horizonte, level = c(95)))
+) %>%
+mutate(
+predicciones_df = map2(predicciones, alquimias_series_tiempo$serie_tiempo, ~ {
+preds <- .x
+preds_mean <- as.numeric(preds$mean)
+alquimia <- tail(index(.y), 1)  # Obtener la última fecha de la serie de tiempo
+fecha_inicio_predicción <- as.Date(tail(index(.y), 1)) + 1 # Comenzar desde el siguiente mes
+fechas_predicción <- seq.Date(fecha_inicio_predicción, by = "1 month", length.out = horizonte)
+data.frame(Alquimia = rep(.y[1], horizonte),  # Acceder a ALQUIMIA mediante .y[1]
+Fecha_estimacion = fechas_predicción,
+Estimacion_puntual = preds_mean,
+Limite_confianza_inferior = as.numeric(preds$lower[,1]),
+Limite_confianza_superior = as.numeric(preds$upper[,1])
+)
+})
+) %>%
+select(ALQUIMIA, predicciones_df)
+predicciones_hw_tabla = predicciones_hw_lista %>%
+unnest() %>%
+as.data.frame() %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior < 0, 0))
+# Obtener la última fecha de pago para cada alquimia para calcular su respectivo horizonte de 6 meses
+fechas_prediccion = alquimias_interpoladas %>%
+group_by(ALQUIMIA) %>%
+summarize(ULTIMA_FECHA_PAGO = max(FECHA_PAGO)) %>%
+# Agregar 6 fechas más con un horizonte de 6 meses a partir de la última fecha de pago
+mutate(Fecha = map(ULTIMA_FECHA_PAGO, ~ seq.Date(.x + months(1), by = "1 month", length.out = 6))) %>%
+rename(ALQUIMIA_FECHAS = ALQUIMIA) %>%
+unnest(Fecha)
+predicciones_finales = cbind(fechas_prediccion,predicciones_hw_tabla) %>%
+select(ALQUIMIA, Fecha, Estimacion_puntual, Limite_confianza_inferior, Limite_confianza_superior) %>%
+as.data.frame()
+predicciones_finales_scotiabank_alquimias = bind_rows(alquimias_mes_anterior, predicciones_finales) %>%
+arrange(ALQUIMIA) %>%
+unite(Fecha_prueba, c(FECHA_PAGO, Fecha), na.rm = TRUE) %>%
+rename(Alquimia=ALQUIMIA, Fecha=Fecha_prueba, Monto_real=MONTO_TOTAL) %>%
+as.data.frame() %>%
+select(Alquimia,Fecha,Monto_real,Estimacion_puntual,Limite_confianza_inferior,Limite_confianza_superior) %>%
+arrange(Alquimia)
+# Guardar los resultados en formato RDS
+saveRDS(predicciones_finales_scotiabank_alquimias, "predicciones_finales_scotiabank_alquimias.rds")
+View(predicciones_finales_scotiabank_alquimias)
