@@ -1,0 +1,50 @@
+library(DBI)
+library(dplyr)
+library(DT)
+library(dygraphs)
+library(fable)
+library(forecast)
+library(fmsb)
+library(fpp2)
+library(ggplot2)
+library(lubridate)
+library(nortest)
+library(odbc)
+library(padr) #When there are missing records for time points where observations were absent, pad will automatically insert these records
+library(purrr)
+library(reshape)
+library(tidyr)
+library(tidyverse)
+library(TSA)
+library(tsibble)
+library(xts)
+library(zoo)
+# Se realiza la conexión para la carga del dataset.
+connection <- dbConnect(odbc(),
+Driver = "SQL Server",
+Server = "200.74.250.96",
+Database = "XPERSOFT_BD",
+UID = "gurena",
+PWD = "CC#E!rMzuWz3gjw@")
+# Se obtiene el dataset de interés.
+slv_pagos_gente_data = dbGetQuery(connection, "
+SELECT TIPO_CARTERA AS TIPO_CARTERA, INSTITUCION AS INSTITUCION,
+FECHA_PAGO AS FECHA_PAGO, MONTO_RECIBO AS MONTO_RECIBO
+FROM CRED_PAGOS
+WHERE PAI_NOMBRE = 'EL SALVADOR'
+AND TIPO_CARTERA = 'Propia'
+AND INSTITUCION = 'GRUPO GENTE'
+")
+# Se cierra la conexión.
+dbDisconnect(connection)
+View(slv_pagos_gente_data)
+str(slv_pagos_gente_data)
+slv_pagos_gente_data$FECHA_PAGO = as.Date(slv_pagos_gente_data$FECHA_PAGO,format="%d/%m/%Y")
+summary(slv_pagos_gente_data)
+slv_pagos_gente = slv_pagos_gente_data %>%
+group_by(INSTITUCION, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO)) %>%
+# Add missing dates per month
+pad() %>%
+as.data.frame()
+View(slv_pagos_gente)

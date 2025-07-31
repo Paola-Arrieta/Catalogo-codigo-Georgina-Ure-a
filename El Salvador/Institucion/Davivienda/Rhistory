@@ -1,0 +1,150 @@
+predicciones_finales_davivienda <- readRDS("C:/Users/gurenab/Documents/Predicción de recuperación/src/El Salvador/Institucion/Davivienda/predicciones_finales_davivienda.rds")
+View(predicciones_finales_davivienda)
+library(DBI)
+library(dplyr)
+library(DT)
+library(dygraphs)
+library(fable)
+library(forecast)
+library(fmsb)
+library(fpp2)
+library(ggplot2)
+library(lubridate)
+library(nortest)
+library(odbc)
+library(padr) #When there are missing records for time points where observations were absent, pad will automatically insert these records
+library(purrr)
+library(reshape)
+library(tidyr)
+library(tidyverse)
+library(TSA)
+library(tsibble)
+library(xts)
+library(zoo)
+# Se realiza la conexión para la carga del dataset.
+connection <- dbConnect(odbc(),
+Driver = "SQL Server",
+Server = "200.74.250.96",
+Database = "XPERSOFT_BD",
+UID = "gurena",
+PWD = "CC#E!rMzuWz3gjw@")
+# Se obtiene el dataset de interés.
+slv_pagos_davivienda_data = dbGetQuery(connection, "
+SELECT TIPO_CARTERA AS TIPO_CARTERA, INSTITUCION AS INSTITUCION,
+FECHA_PAGO AS FECHA_PAGO, MONTO_RECIBO AS MONTO_RECIBO
+FROM CRED_PAGOS
+WHERE PAI_NOMBRE = 'EL SALVADOR'
+AND TIPO_CARTERA = 'Propia'
+AND INSTITUCION = 'DAVIVIENDA'
+")
+# Se cierra la conexión.
+dbDisconnect(connection)
+# str(slv_pagos_davivienda_data)
+slv_pagos_davivienda_data$FECHA_PAGO = as.Date(slv_pagos_davivienda_data$FECHA_PAGO,format="%d/%m/%Y")
+slv_pagos_davivienda = slv_pagos_davivienda_data %>%
+group_by(INSTITUCION, FECHA_PAGO = floor_date(FECHA_PAGO, 'month')) %>%
+summarize(MONTO_TOTAL = sum(MONTO_RECIBO)) %>%
+# Add missing dates per month
+pad() %>%
+as.data.frame()
+View(slv_pagos_davivienda)
+# Se completa la primera columna
+slv_pagos_davivienda$INSTITUCION = replace_na(as.character(slv_pagos_davivienda$INSTITUCION), "DAVIVIENDA")
+# Se interpolan los valores perdidos
+slv_pagos_davivienda = slv_pagos_davivienda %>%
+mutate(MONTO_TOTAL=na.approx(MONTO_TOTAL))
+# Se decide dejar como primer la primera observación. Decido dejar como última observación el mes anterior al actual completo.
+init_first_month = slv_pagos_davivienda$FECHA_PAGO[1]
+init_first_month_month = month(init_first_month)
+init_first_month_year = year(init_first_month)
+currentDate = Sys.Date()
+end_last_month = rollback(currentDate)
+init_last_month = rollback(end_last_month, roll_to_first = TRUE)
+slv_pagos_davivienda = slv_pagos_davivienda %>%
+filter(FECHA_PAGO >= init_first_month & FECHA_PAGO <= init_last_month)
+# Se crea la serie de tiempo. El patrón estacional es mensual, por eso la frecuencia es 12
+serie = ts(slv_pagos_davivienda$MONTO_TOTAL, start = c(init_first_month_year,init_first_month_month), frequency = 12)
+# Decido utilizar para testing el 20% de la data
+proporcion_training = 0.80
+indices_training = length(serie)*proporcion_training
+# Se crea la tabla para training
+serie_training = head(serie, indices_training)
+# Se crea la tabla de testing
+serie_testing = tail(serie, -indices_training)
+# head(serie_testing)
+# tail(serie_testing)
+n_testing = length(serie_testing)
+# Función para calibrar Holt-Winters
+calibrar_HW <- function(entrenamiento, prueba, paso = 0.1) {
+# todas las combinaciones son calculadas para los parámetros
+params <- purrr::cross(list(a = seq(0, 1, by = paso), b = seq(0, 1, by = paso),
+g = seq(0, 1, by = paso)))
+# un modelo es calculado para cada combinación de parámetros
+hw_secure <- purrr::possibly(stats::HoltWinters, otherwise = NULL)
+models <- purrr::map(params, ~suppressWarnings(hw_secure(entrenamiento, alpha = ifelse(.$a ==
+0, F, .$a), beta = ifelse(.$b == 0, F, .$b), gamma = ifelse(.$g == 0, F,
+.$g))))
+# la predicción es calculada para cada modelo
+predictions <- purrr::map(models, ~{
+if (is.null(.)) {
+return(NULL)
+}
+forecast(., h = length(prueba))
+})
+# el error es calculado para cada predicción
+error <- purrr::map_dbl(predictions, ~{
+if (is.null(.)) {
+return(Inf)
+}
+sum((as.numeric(prueba) - as.numeric(.$mean))^2)
+})
+# se retorna el modelo con el error más bajo
+best_model <- models[[which.min(error)]]
+p <- params[[which.min(error)]]
+best_model$call <- call("HoltWinters", x = quote(datos), alpha = ifelse(p$a ==
+0, F, p$a), beta = ifelse(p$b == 0, F, p$b), gamma = ifelse(p$g == 0, F,
+p$g))
+return(best_model)
+}
+# Holt-Winters es calibrado con la función anterior
+calibrar_HW(serie_training, serie_testing)
+# Modelo Holt-Winters calibrado con los parámetros sugeridos
+model_calibrated_HW = HoltWinters(x = serie_training, alpha = calibrar_HW(serie_training, serie_testing)$alpha, beta = calibrar_HW(serie_training, serie_testing)$beta, gamma = calibrar_HW(serie_training, serie_testing)$gamma)
+model_calibrated_HW
+# Parámetros
+model_calibrated_HW_alpha = model_calibrated_HW$alpha
+model_calibrated_HW_beta = model_calibrated_HW$beta
+model_calibrated_HW_gamma = model_calibrated_HW$gamma
+# Modelo Holt-Winters calibrado
+final_model = HoltWinters(x = serie, alpha = model_calibrated_HW_alpha, beta = model_calibrated_HW_beta, gamma = model_calibrated_HW_gamma)
+final_model
+# Predicciones con Holt-Winters calibrado
+final_pred = forecast(final_model, h = 6, level = c(95))
+final_pred
+# Unión de las predicciones
+p = ts.union(prediction = final_pred$mean, LowerConfidenceLimit = final_pred$lower, UpperConfidenceLimit = final_pred$upper)
+# Todas las predicciones
+final_predictions = ts.union(serie, p)
+final_predictions
+# Fecha final para la serie original
+final_date = slv_pagos_davivienda$FECHA_PAGO[nrow(slv_pagos_davivienda)]
+final_date
+# Nuevas fechas para las predicciones
+dates = final_date + months(1:6)
+dates
+# Unión de las nuevas fechas con las fechas de la serie original
+total_dates = c(slv_pagos_davivienda$FECHA_PAGO, dates)
+# Predicciones finales con dygraph
+predictions = xts(xts(final_predictions, order.by = total_dates))
+# Predicciones finales como data.frame
+fechas_finales = as.data.frame(total_dates)
+predicciones_finales =  as.data.frame(predictions)
+predicciones_finales_davivienda = cbind(fechas_finales,predicciones_finales) %>%
+as.data.frame()
+names(predicciones_finales_davivienda) = c("Fecha", "Monto_real", "Estimacion_puntual", "Limite_confianza_inferior", "Limite_confianza_superior")
+predicciones_finales_davivienda = predicciones_finales_davivienda %>%
+mutate(Limite_confianza_inferior = replace(Limite_confianza_inferior, Limite_confianza_inferior<0, 0))
+View(slv_pagos_davivienda_data)
+View(predicciones_finales_davivienda)
+# Guardar los resultados en formato RDS
+saveRDS(predicciones_finales_davivienda, "predicciones_finales_davivienda.rds")
